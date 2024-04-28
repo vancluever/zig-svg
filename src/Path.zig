@@ -15,8 +15,6 @@ const Path = @This();
 arena: heap.ArenaAllocator,
 
 data: []const u8,
-filename: []const u8,
-line_pos: usize,
 pos: usize = 0,
 
 nodes: []Node = &[_]Node{},
@@ -54,11 +52,9 @@ const ParseError = struct {
     }
 };
 
-pub fn init(alloc: mem.Allocator, filename: []const u8, line_pos: usize, data: []const u8) Path {
+pub fn init(alloc: mem.Allocator, data: []const u8) Path {
     return .{
         .arena = heap.ArenaAllocator.init(alloc),
-        .filename = filename,
-        .line_pos = line_pos,
         .data = data,
     };
 }
@@ -76,10 +72,8 @@ pub fn fmtErr(self: *Path, writer: anytype) !void {
     if (self.err) |e| {
         try fmt.format(
             writer,
-            "at {s}:{d}:{d}: expected {s}, found ",
+            "at pos {d}: expected {s}, found ",
             .{
-                self.filename,
-                self.line_pos,
                 if (e.pos.start < self.data.len) e.pos.start + 1 else self.data.len,
                 @tagName(e.expected),
             },
@@ -1181,8 +1175,6 @@ test "parse" {
         // Good, triangle
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "M 100 101 L 300 100 L 200 300 z",
         );
         defer parser.deinit();
@@ -1217,8 +1209,6 @@ test "parse" {
         // test.
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             \\M 1,1
             \\m 1,1
             \\Z
@@ -1272,8 +1262,6 @@ test "parse" {
         // Bad, but parsed to last good node
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "M 100 101 L 300 100 Lx",
         );
         defer parser.deinit();
@@ -1286,15 +1274,13 @@ test "parse" {
         try testing.expectEqual(21, parser.err.?.pos.start);
         try testing.expectEqual(21, parser.err.?.pos.end);
         try testing.expectEqual(20, parser.pos);
-        try testError(&parser, "at test:1:22: expected coordinate_pair, found 'x'\n");
+        try testError(&parser, "at pos 22: expected coordinate_pair, found 'x'\n");
     }
 
     {
         // Bad, but parsed to last good node (unknown command)
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "M 100 101 L 300 100 x",
         );
         defer parser.deinit();
@@ -1307,15 +1293,13 @@ test "parse" {
         try testing.expectEqual(20, parser.err.?.pos.start);
         try testing.expectEqual(20, parser.err.?.pos.end);
         try testing.expectEqual(20, parser.pos);
-        try testError(&parser, "at test:1:21: expected drawto_command, found 'x'\n");
+        try testError(&parser, "at pos 21: expected drawto_command, found 'x'\n");
     }
 
     {
         // Bad, must start with move_to
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "L 100 101 L 300 100 z",
         );
         defer parser.deinit();
@@ -1326,7 +1310,7 @@ test "parse" {
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:1: expected M_or_m, found 'L'\n");
+        try testError(&parser, "at pos 1: expected M_or_m, found 'L'\n");
     }
 }
 
@@ -1335,8 +1319,6 @@ test "MoveTo" {
         // Good, single, absolute
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "M 10,11 Z",
         );
         defer parser.deinit();
@@ -1357,8 +1339,6 @@ test "MoveTo" {
         // Good, single, relative
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "m 10,11 Z",
         );
         defer parser.deinit();
@@ -1379,8 +1359,6 @@ test "MoveTo" {
         // Good, multiple
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "M 10,11 20,21 30,31 Z",
         );
         defer parser.deinit();
@@ -1409,8 +1387,6 @@ test "MoveTo" {
         // never come up in real-world use.
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "x 10,11",
         );
         defer parser.deinit();
@@ -1420,15 +1396,13 @@ test "MoveTo" {
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:1: expected M_or_m, found 'x'\n");
+        try testError(&parser, "at pos 1: expected M_or_m, found 'x'\n");
     }
 
     {
         // Bad, incomplete arg
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "M 25,",
         );
         defer parser.deinit();
@@ -1438,7 +1412,7 @@ test "MoveTo" {
         try testing.expectEqual(2, parser.err.?.pos.start);
         try testing.expectEqual(4, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:3: expected coordinate_pair, found '25,'\n");
+        try testError(&parser, "at pos 3: expected coordinate_pair, found '25,'\n");
     }
 }
 
@@ -1447,8 +1421,6 @@ test "ClosePath" {
         // Good
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "Z z",
         );
         defer parser.deinit();
@@ -1472,8 +1444,6 @@ test "ClosePath" {
         // never come up in real-world use.
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "x",
         );
         defer parser.deinit();
@@ -1483,7 +1453,7 @@ test "ClosePath" {
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:1: expected Z_or_z, found 'x'\n");
+        try testError(&parser, "at pos 1: expected Z_or_z, found 'x'\n");
     }
 }
 
@@ -1492,8 +1462,6 @@ test "LineTo" {
         // Good, single, absolute
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "L 10,11 Z",
         );
         defer parser.deinit();
@@ -1514,8 +1482,6 @@ test "LineTo" {
         // Good, single, relative
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "l 10,11 Z",
         );
         defer parser.deinit();
@@ -1536,8 +1502,6 @@ test "LineTo" {
         // Good, multiple
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "L 10,11 20,21 30,31 Z",
         );
         defer parser.deinit();
@@ -1566,8 +1530,6 @@ test "LineTo" {
         // never come up in real-world use.
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "x 10,11",
         );
         defer parser.deinit();
@@ -1577,15 +1539,13 @@ test "LineTo" {
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:1: expected L_or_l, found 'x'\n");
+        try testError(&parser, "at pos 1: expected L_or_l, found 'x'\n");
     }
 
     {
         // Bad, incomplete arg
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "L 25,",
         );
         defer parser.deinit();
@@ -1595,7 +1555,7 @@ test "LineTo" {
         try testing.expectEqual(2, parser.err.?.pos.start);
         try testing.expectEqual(4, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:3: expected coordinate_pair, found '25,'\n");
+        try testError(&parser, "at pos 3: expected coordinate_pair, found '25,'\n");
     }
 }
 
@@ -1604,8 +1564,6 @@ test "HorizontalLineTo" {
         // Good, single, absolute
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "H 10 Z",
         );
         defer parser.deinit();
@@ -1625,8 +1583,6 @@ test "HorizontalLineTo" {
         // Good, single, relative
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "h 10 Z",
         );
         defer parser.deinit();
@@ -1646,8 +1602,6 @@ test "HorizontalLineTo" {
         // Good, multiple
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "H 10 11 12 Z",
         );
         defer parser.deinit();
@@ -1676,8 +1630,6 @@ test "HorizontalLineTo" {
         // never come up in real-world use.
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "x 10",
         );
         defer parser.deinit();
@@ -1687,15 +1639,13 @@ test "HorizontalLineTo" {
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:1: expected H_or_h, found 'x'\n");
+        try testError(&parser, "at pos 1: expected H_or_h, found 'x'\n");
     }
 
     {
         // Bad, incomplete arg
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "H ,",
         );
         defer parser.deinit();
@@ -1705,7 +1655,7 @@ test "HorizontalLineTo" {
         try testing.expectEqual(2, parser.err.?.pos.start);
         try testing.expectEqual(2, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:3: expected number, found ','\n");
+        try testError(&parser, "at pos 3: expected number, found ','\n");
     }
 }
 
@@ -1714,8 +1664,6 @@ test "VerticalLineTo" {
         // Good, single, absolute
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "V 10 Z",
         );
         defer parser.deinit();
@@ -1735,8 +1683,6 @@ test "VerticalLineTo" {
         // Good, single, relative
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "v 10 Z",
         );
         defer parser.deinit();
@@ -1756,8 +1702,6 @@ test "VerticalLineTo" {
         // Good, multiple
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "V 10 11 12 Z",
         );
         defer parser.deinit();
@@ -1786,8 +1730,6 @@ test "VerticalLineTo" {
         // never come up in real-world use.
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "x 10",
         );
         defer parser.deinit();
@@ -1797,15 +1739,13 @@ test "VerticalLineTo" {
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:1: expected V_or_v, found 'x'\n");
+        try testError(&parser, "at pos 1: expected V_or_v, found 'x'\n");
     }
 
     {
         // Bad, incomplete arg
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "V ,",
         );
         defer parser.deinit();
@@ -1815,7 +1755,7 @@ test "VerticalLineTo" {
         try testing.expectEqual(2, parser.err.?.pos.start);
         try testing.expectEqual(2, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:3: expected number, found ','\n");
+        try testError(&parser, "at pos 3: expected number, found ','\n");
     }
 }
 
@@ -1824,8 +1764,6 @@ test "CurveTo" {
         // Good, single, absolute
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "C 10,11 20,21 30,31",
         );
         defer parser.deinit();
@@ -1850,8 +1788,6 @@ test "CurveTo" {
         // Good, single, relative
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "c 10,11 20,21 30,31 Z",
         );
         defer parser.deinit();
@@ -1876,8 +1812,6 @@ test "CurveTo" {
         // Good, multiple
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             \\C 10,11 20,21 30,31
             \\40,41 50,51 60,61
             \\70,71 80,81 90,91 Z
@@ -1924,8 +1858,6 @@ test "CurveTo" {
         // never come up in real-world use.
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "x 10,11 20,21 30,31",
         );
         defer parser.deinit();
@@ -1935,15 +1867,13 @@ test "CurveTo" {
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:1: expected C_or_c, found 'x'\n");
+        try testError(&parser, "at pos 1: expected C_or_c, found 'x'\n");
     }
 
     {
         // Bad, incomplete arg
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "C 10,11 20,Z",
         );
         defer parser.deinit();
@@ -1953,7 +1883,7 @@ test "CurveTo" {
         try testing.expectEqual(8, parser.err.?.pos.start);
         try testing.expectEqual(11, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:9: expected coordinate_pair, found '20,Z'\n");
+        try testError(&parser, "at pos 9: expected coordinate_pair, found '20,Z'\n");
     }
 }
 
@@ -1962,8 +1892,6 @@ test "SmoothCurveTo" {
         // Good, single, absolute
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "S 10,11 20,21",
         );
         defer parser.deinit();
@@ -1986,8 +1914,6 @@ test "SmoothCurveTo" {
         // Good, single, relative
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "s 10,11 20,21 Z",
         );
         defer parser.deinit();
@@ -2010,8 +1936,6 @@ test "SmoothCurveTo" {
         // Good, multiple
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             \\S 10,11 20,21
             \\30,31 40,41
             \\50,51 60,61 Z
@@ -2052,8 +1976,6 @@ test "SmoothCurveTo" {
         // never come up in real-world use.
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "x 10,11 20,21",
         );
         defer parser.deinit();
@@ -2063,15 +1985,13 @@ test "SmoothCurveTo" {
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:1: expected S_or_s, found 'x'\n");
+        try testError(&parser, "at pos 1: expected S_or_s, found 'x'\n");
     }
 
     {
         // Bad, incomplete arg
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "S 10,11 20,Z",
         );
         defer parser.deinit();
@@ -2081,7 +2001,7 @@ test "SmoothCurveTo" {
         try testing.expectEqual(8, parser.err.?.pos.start);
         try testing.expectEqual(11, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:9: expected coordinate_pair, found '20,Z'\n");
+        try testError(&parser, "at pos 9: expected coordinate_pair, found '20,Z'\n");
     }
 }
 
@@ -2090,8 +2010,6 @@ test "QuadraticBezierCurveTo" {
         // Good, single, absolute
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "Q 10,11 20,21",
         );
         defer parser.deinit();
@@ -2114,8 +2032,6 @@ test "QuadraticBezierCurveTo" {
         // Good, single, relative
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "q 10,11 20,21 Z",
         );
         defer parser.deinit();
@@ -2138,8 +2054,6 @@ test "QuadraticBezierCurveTo" {
         // Good, multiple
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             \\Q 10,11 20,21
             \\30,31 40,41
             \\50,51 60,61 Z
@@ -2180,8 +2094,6 @@ test "QuadraticBezierCurveTo" {
         // never come up in real-world use.
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "x 10,11 20,21",
         );
         defer parser.deinit();
@@ -2191,15 +2103,13 @@ test "QuadraticBezierCurveTo" {
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:1: expected Q_or_q, found 'x'\n");
+        try testError(&parser, "at pos 1: expected Q_or_q, found 'x'\n");
     }
 
     {
         // Bad, incomplete arg
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "Q 10,11 20,Z",
         );
         defer parser.deinit();
@@ -2209,7 +2119,7 @@ test "QuadraticBezierCurveTo" {
         try testing.expectEqual(8, parser.err.?.pos.start);
         try testing.expectEqual(11, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:9: expected coordinate_pair, found '20,Z'\n");
+        try testError(&parser, "at pos 9: expected coordinate_pair, found '20,Z'\n");
     }
 }
 
@@ -2218,8 +2128,6 @@ test "SmoothQuadraticBezierCurveTo" {
         // Good, single, absolute
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "T 10,11 Z",
         );
         defer parser.deinit();
@@ -2240,8 +2148,6 @@ test "SmoothQuadraticBezierCurveTo" {
         // Good, single, relative
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "t 10,11 Z",
         );
         defer parser.deinit();
@@ -2262,8 +2168,6 @@ test "SmoothQuadraticBezierCurveTo" {
         // Good, multiple
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "T 10,11 20,21 30,31 Z",
         );
         defer parser.deinit();
@@ -2292,8 +2196,6 @@ test "SmoothQuadraticBezierCurveTo" {
         // never come up in real-world use.
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "x 10,11",
         );
         defer parser.deinit();
@@ -2303,15 +2205,13 @@ test "SmoothQuadraticBezierCurveTo" {
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:1: expected T_or_t, found 'x'\n");
+        try testError(&parser, "at pos 1: expected T_or_t, found 'x'\n");
     }
 
     {
         // Bad, incomplete arg
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "T 25,",
         );
         defer parser.deinit();
@@ -2321,7 +2221,7 @@ test "SmoothQuadraticBezierCurveTo" {
         try testing.expectEqual(2, parser.err.?.pos.start);
         try testing.expectEqual(4, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:3: expected coordinate_pair, found '25,'\n");
+        try testError(&parser, "at pos 3: expected coordinate_pair, found '25,'\n");
     }
 }
 
@@ -2330,8 +2230,6 @@ test "EllipticalArc" {
         // Good, single, absolute
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "A 25,26 -30 0,1 50,-25",
         );
         defer parser.deinit();
@@ -2357,8 +2255,6 @@ test "EllipticalArc" {
         // Good, single, relative
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "a 25,26 -30 0,1 50,-25 Z",
         );
         defer parser.deinit();
@@ -2384,8 +2280,6 @@ test "EllipticalArc" {
         // Good, multiple
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             \\A 25,26 -30 0,1 50,-25
             \\26,51 -29 1,0 49,-26
             \\27,52 -28 0,1 48,-27 Z
@@ -2435,8 +2329,6 @@ test "EllipticalArc" {
         // never come up in real-world use.
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "x 25,26 -30 0,1 50,-25",
         );
         defer parser.deinit();
@@ -2446,15 +2338,13 @@ test "EllipticalArc" {
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:1: expected A_or_a, found 'x'\n");
+        try testError(&parser, "at pos 1: expected A_or_a, found 'x'\n");
     }
 
     {
         // Bad, incomplete arg
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "A 25,26 -30 Z",
         );
         defer parser.deinit();
@@ -2464,7 +2354,7 @@ test "EllipticalArc" {
         try testing.expectEqual(12, parser.err.?.pos.start);
         try testing.expectEqual(12, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:13: expected flag, found 'Z'\n");
+        try testError(&parser, "at pos 13: expected flag, found 'Z'\n");
     }
 }
 
@@ -2473,8 +2363,6 @@ test "EllipticalArcArgument" {
         // Basic
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "25,26 -30 0,1 50,-25",
         );
         defer parser.deinit();
@@ -2497,8 +2385,6 @@ test "EllipticalArcArgument" {
         // Bad, negative rx
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "-25,26 -30 0,1 50,-25",
         );
         defer parser.deinit();
@@ -2508,15 +2394,13 @@ test "EllipticalArcArgument" {
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(2, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:1: expected nonnegative_number, found '-25'\n");
+        try testError(&parser, "at pos 1: expected nonnegative_number, found '-25'\n");
     }
 
     {
         // Bad, negative ry
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "25,-26 -30 0,1 50,-25",
         );
         defer parser.deinit();
@@ -2526,15 +2410,13 @@ test "EllipticalArcArgument" {
         try testing.expectEqual(3, parser.err.?.pos.start);
         try testing.expectEqual(5, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:4: expected nonnegative_number, found '-26'\n");
+        try testError(&parser, "at pos 4: expected nonnegative_number, found '-26'\n");
     }
 
     {
         // Bad, non-number rotation
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "25,26 aa 0,1 50,-25",
         );
         defer parser.deinit();
@@ -2544,15 +2426,13 @@ test "EllipticalArcArgument" {
         try testing.expectEqual(6, parser.err.?.pos.start);
         try testing.expectEqual(6, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:7: expected number, found 'a'\n");
+        try testError(&parser, "at pos 7: expected number, found 'a'\n");
     }
 
     {
         // Bad, non-flag large-arc-flag
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "25,26 -30 2,1 50,-25",
         );
         defer parser.deinit();
@@ -2562,15 +2442,13 @@ test "EllipticalArcArgument" {
         try testing.expectEqual(10, parser.err.?.pos.start);
         try testing.expectEqual(10, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:11: expected flag, found '2'\n");
+        try testError(&parser, "at pos 11: expected flag, found '2'\n");
     }
 
     {
         // Bad, non-flag sweep-flag
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "25,26 -30 0,2 50,-25",
         );
         defer parser.deinit();
@@ -2580,15 +2458,13 @@ test "EllipticalArcArgument" {
         try testing.expectEqual(12, parser.err.?.pos.start);
         try testing.expectEqual(12, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:13: expected flag, found '2'\n");
+        try testError(&parser, "at pos 13: expected flag, found '2'\n");
     }
 
     {
         // Bad, non-number x
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "25,26 -30 0,1 a,-25",
         );
         defer parser.deinit();
@@ -2598,15 +2474,13 @@ test "EllipticalArcArgument" {
         try testing.expectEqual(14, parser.err.?.pos.start);
         try testing.expectEqual(14, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:15: expected coordinate_pair, found 'a'\n");
+        try testError(&parser, "at pos 15: expected coordinate_pair, found 'a'\n");
     }
 
     {
         // Bad, non-number y
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "25,26 -30 0,1 50,a",
         );
         defer parser.deinit();
@@ -2616,7 +2490,7 @@ test "EllipticalArcArgument" {
         try testing.expectEqual(14, parser.err.?.pos.start);
         try testing.expectEqual(17, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:15: expected coordinate_pair, found '50,a'\n");
+        try testError(&parser, "at pos 15: expected coordinate_pair, found '50,a'\n");
     }
 }
 
@@ -2625,8 +2499,6 @@ test "CoordinatePair" {
         // Basic
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "123 456.789 123,456.789 123-456",
         );
         defer parser.deinit();
@@ -2662,15 +2534,13 @@ test "CoordinatePair" {
         try testing.expectEqual(31, parser.err.?.pos.start);
         try testing.expectEqual(31, parser.err.?.pos.end);
         try testing.expectEqual(31, parser.pos);
-        try testError(&parser, "at test:1:31: expected coordinate_pair, found end of path data\n");
+        try testError(&parser, "at pos 31: expected coordinate_pair, found end of path data\n");
     }
 
     {
         // Bad, second arg
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "123,a",
         );
         defer parser.deinit();
@@ -2680,15 +2550,13 @@ test "CoordinatePair" {
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(4, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:1: expected coordinate_pair, found '123,a'\n");
+        try testError(&parser, "at pos 1: expected coordinate_pair, found '123,a'\n");
     }
 
     {
         // Bad, no second arg, end of path data
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "123,",
         );
         defer parser.deinit();
@@ -2698,7 +2566,7 @@ test "CoordinatePair" {
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(3, parser.err.?.pos.end);
         try testing.expectEqual(0, parser.pos);
-        try testError(&parser, "at test:1:1: expected coordinate_pair, found '123,'\n");
+        try testError(&parser, "at pos 1: expected coordinate_pair, found '123,'\n");
     }
 }
 
@@ -2707,8 +2575,6 @@ test "Coordinate" {
         // Basic
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "123 456.789",
         );
         defer parser.deinit();
@@ -2734,8 +2600,6 @@ test "Flag" {
         // Basic
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "0 1 2",
         );
         defer parser.deinit();
@@ -2763,8 +2627,6 @@ test "Number" {
         // Basic
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "1 2 0 123 45a6 789 -123 123-123 123.456 +123+123",
         );
         defer parser.deinit();
@@ -2865,8 +2727,6 @@ test "Number" {
         // Exponents
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "10e1 10e+1 10e-1 10e10 10ee 10e.1 -.1e1 0.01e+2",
         );
         defer parser.deinit();
@@ -2941,8 +2801,6 @@ test "consumeWhitespace" {
     {
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "   a  ",
         );
         defer parser.deinit();
@@ -2963,8 +2821,6 @@ test "consumeCommaWhitespace" {
     {
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "   ,  a  a  ,,",
         );
         defer parser.deinit();
@@ -3007,8 +2863,6 @@ test "fmtErr" {
         // Basic
         var parser = init(
             testing.allocator,
-            "test",
-            1,
             "abc def ghi",
         );
         defer parser.deinit();
@@ -3020,6 +2874,6 @@ test "fmtErr" {
             },
         };
 
-        try testError(&parser, "at test:1:9: expected coordinate_pair, found 'ghi'\n");
+        try testError(&parser, "at pos 9: expected coordinate_pair, found 'ghi'\n");
     }
 }
