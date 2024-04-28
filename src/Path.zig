@@ -98,6 +98,422 @@ pub const Pos = struct {
     end: usize,
 };
 
+pub const HorizontalLineTo = struct {
+    relative: bool,
+    args: []Number,
+    pos: Pos,
+
+    fn parse(self: *Path) !?HorizontalLineTo {
+        const reset = self.pos;
+        var start = self.pos;
+        var relative: bool = undefined;
+        var pos: Pos = undefined;
+        var args = std.ArrayList(Number).init(self.arena.allocator());
+        errdefer args.deinit();
+
+        switch (self.data[self.pos]) {
+            'H' => relative = false,
+            'h' => relative = true,
+            else => {
+                self.setErr(.H_or_h, start, self.pos, reset);
+                args.deinit();
+                return null;
+            },
+        }
+
+        pos.start = self.pos;
+        pos.end = self.pos;
+        self.pos += 1;
+        self.consumeWhitespace();
+
+        start = self.pos;
+        if (Number.parse(self)) |a| {
+            try args.append(a);
+            pos.end = a.pos.end;
+        } else {
+            self.setErr(.number, start, self.pos, reset);
+            args.deinit();
+            return null;
+        }
+
+        start = self.pos;
+        self.consumeCommaWhitespace();
+        while (Number.parse(self)) |a| {
+            try args.append(a);
+            pos.end = a.pos.end;
+            start = self.pos;
+            self.consumeCommaWhitespace();
+        }
+
+        // Rewind to right after the end of last good consumed sequence, and
+        // clear any errors
+        self.pos = start;
+        self.err = null;
+        return .{
+            .relative = relative,
+            .args = args.items,
+            .pos = pos,
+        };
+    }
+};
+
+pub const VerticalLineTo = struct {
+    relative: bool,
+    args: []Number,
+    pos: Pos,
+
+    fn parse(self: *Path) !?VerticalLineTo {
+        const reset = self.pos;
+        var start = self.pos;
+        var relative: bool = undefined;
+        var pos: Pos = undefined;
+        var args = std.ArrayList(Number).init(self.arena.allocator());
+        errdefer args.deinit();
+
+        switch (self.data[self.pos]) {
+            'V' => relative = false,
+            'v' => relative = true,
+            else => {
+                self.setErr(.V_or_v, start, self.pos, reset);
+                args.deinit();
+                return null;
+            },
+        }
+
+        pos.start = self.pos;
+        pos.end = self.pos;
+        self.pos += 1;
+        self.consumeWhitespace();
+
+        start = self.pos;
+        if (Number.parse(self)) |a| {
+            try args.append(a);
+            pos.end = a.pos.end;
+        } else {
+            self.setErr(.number, start, self.pos, reset);
+            args.deinit();
+            return null;
+        }
+
+        start = self.pos;
+        self.consumeCommaWhitespace();
+        while (Number.parse(self)) |a| {
+            try args.append(a);
+            pos.end = a.pos.end;
+            start = self.pos;
+            self.consumeCommaWhitespace();
+        }
+
+        // Rewind to right after the end of last good consumed sequence, and
+        // clear any errors
+        self.pos = start;
+        self.err = null;
+        return .{
+            .relative = relative,
+            .args = args.items,
+            .pos = pos,
+        };
+    }
+};
+
+pub const CurveTo = struct {
+    relative: bool,
+    args: []CurveToArgument,
+    pos: Pos,
+
+    fn parse(self: *Path) !?CurveTo {
+        const reset = self.pos;
+        var start = self.pos;
+        var relative: bool = undefined;
+        var pos: Pos = undefined;
+        var args = std.ArrayList(CurveToArgument).init(self.arena.allocator());
+        errdefer args.deinit();
+
+        switch (self.data[self.pos]) {
+            'C' => relative = false,
+            'c' => relative = true,
+            else => {
+                self.setErr(.C_or_c, start, self.pos, reset);
+                args.deinit();
+                return null;
+            },
+        }
+
+        pos.start = self.pos;
+        pos.end = self.pos;
+        self.pos += 1;
+        self.consumeWhitespace();
+
+        start = self.pos;
+        if (CurveToArgument.parse(self)) |a| {
+            try args.append(a);
+            pos.end = a.pos.end;
+        } else {
+            debug.assert(self.err != null);
+            // Error has already been set, but we need to reset our position
+            self.pos = reset;
+            args.deinit();
+            return null;
+        }
+
+        start = self.pos;
+        self.consumeCommaWhitespace();
+        while (CurveToArgument.parse(self)) |a| {
+            try args.append(a);
+            pos.end = a.pos.end;
+            start = self.pos;
+            self.consumeCommaWhitespace();
+        }
+
+        // Rewind to right after the end of last good consumed sequence, and
+        // clear any errors
+        self.pos = start;
+        self.err = null;
+        return .{
+            .relative = relative,
+            .args = args.items,
+            .pos = pos,
+        };
+    }
+};
+
+pub const CurveToArgument = struct {
+    p1: CoordinatePair,
+    p2: CoordinatePair,
+    end: CoordinatePair,
+    pos: Pos,
+
+    fn parse(self: *Path) ?CurveToArgument {
+        const reset = self.pos;
+        var result: CurveToArgument = undefined;
+        if (CoordinatePair.parse(self)) |p| {
+            result.p1 = p;
+            result.pos = p.pos;
+        } else {
+            debug.assert(self.err != null);
+            // Error has already been set, but we need to reset our position
+            self.pos = reset;
+            return null;
+        }
+
+        self.consumeCommaWhitespace();
+
+        if (CoordinatePair.parse(self)) |p| {
+            result.p2 = p;
+            result.pos.end = p.pos.end;
+        } else {
+            debug.assert(self.err != null);
+            // Error has already been set, but we need to reset our position
+            self.pos = reset;
+            return null;
+        }
+
+        self.consumeCommaWhitespace();
+
+        if (CoordinatePair.parse(self)) |p| {
+            result.end = p;
+            result.pos.end = p.pos.end;
+        } else {
+            debug.assert(self.err != null);
+            // Error has already been set, but we need to reset our position
+            self.pos = reset;
+            return null;
+        }
+
+        return result;
+    }
+};
+
+pub const SmoothCurveTo = struct {
+    relative: bool,
+    args: []SmoothCurveToArgument,
+    pos: Pos,
+
+    fn parse(self: *Path) !?SmoothCurveTo {
+        const reset = self.pos;
+        var start = self.pos;
+        var relative: bool = undefined;
+        var pos: Pos = undefined;
+        var args = std.ArrayList(SmoothCurveToArgument).init(self.arena.allocator());
+        errdefer args.deinit();
+
+        switch (self.data[self.pos]) {
+            'S' => relative = false,
+            's' => relative = true,
+            else => {
+                self.setErr(.S_or_s, start, self.pos, reset);
+                args.deinit();
+                return null;
+            },
+        }
+
+        pos.start = self.pos;
+        pos.end = self.pos;
+        self.pos += 1;
+        self.consumeWhitespace();
+
+        start = self.pos;
+        if (SmoothCurveToArgument.parse(self)) |a| {
+            try args.append(a);
+            pos.end = a.pos.end;
+        } else {
+            debug.assert(self.err != null);
+            // Error has already been set, but we need to reset our position
+            self.pos = reset;
+            args.deinit();
+            return null;
+        }
+
+        start = self.pos;
+        self.consumeCommaWhitespace();
+        while (SmoothCurveToArgument.parse(self)) |a| {
+            try args.append(a);
+            pos.end = a.pos.end;
+            start = self.pos;
+            self.consumeCommaWhitespace();
+        }
+
+        // Rewind to right after the end of last good consumed sequence, and
+        // clear any errors
+        self.pos = start;
+        self.err = null;
+        return .{
+            .relative = relative,
+            .args = args.items,
+            .pos = pos,
+        };
+    }
+};
+
+pub const SmoothCurveToArgument = struct {
+    p2: CoordinatePair,
+    end: CoordinatePair,
+    pos: Pos,
+
+    fn parse(self: *Path) ?SmoothCurveToArgument {
+        const reset = self.pos;
+        var result: SmoothCurveToArgument = undefined;
+        if (CoordinatePair.parse(self)) |p| {
+            result.p2 = p;
+            result.pos = p.pos;
+        } else {
+            debug.assert(self.err != null);
+            // Error has already been set, but we need to reset our position
+            self.pos = reset;
+            return null;
+        }
+
+        self.consumeCommaWhitespace();
+
+        if (CoordinatePair.parse(self)) |p| {
+            result.end = p;
+            result.pos.end = p.pos.end;
+        } else {
+            debug.assert(self.err != null);
+            // Error has already been set, but we need to reset our position
+            self.pos = reset;
+            return null;
+        }
+
+        return result;
+    }
+};
+
+pub const QuadraticBezierCurveTo = struct {
+    relative: bool,
+    args: []QuadraticBezierCurveToArgument,
+    pos: Pos,
+
+    fn parse(self: *Path) !?QuadraticBezierCurveTo {
+        const reset = self.pos;
+        var start = self.pos;
+        var relative: bool = undefined;
+        var pos: Pos = undefined;
+        var args = std.ArrayList(QuadraticBezierCurveToArgument).init(self.arena.allocator());
+        errdefer args.deinit();
+
+        switch (self.data[self.pos]) {
+            'Q' => relative = false,
+            'q' => relative = true,
+            else => {
+                self.setErr(.Q_or_q, start, self.pos, reset);
+                args.deinit();
+                return null;
+            },
+        }
+
+        pos.start = self.pos;
+        pos.end = self.pos;
+        self.pos += 1;
+        self.consumeWhitespace();
+
+        start = self.pos;
+        if (QuadraticBezierCurveToArgument.parse(self)) |a| {
+            try args.append(a);
+            pos.end = a.pos.end;
+        } else {
+            debug.assert(self.err != null);
+            // Error has already been set, but we need to reset our position
+            self.pos = reset;
+            args.deinit();
+            return null;
+        }
+
+        start = self.pos;
+        self.consumeCommaWhitespace();
+        while (QuadraticBezierCurveToArgument.parse(self)) |a| {
+            try args.append(a);
+            pos.end = a.pos.end;
+            start = self.pos;
+            self.consumeCommaWhitespace();
+        }
+
+        // Rewind to right after the end of last good consumed sequence, and
+        // clear any errors
+        self.pos = start;
+        self.err = null;
+        return .{
+            .relative = relative,
+            .args = args.items,
+            .pos = pos,
+        };
+    }
+};
+
+pub const QuadraticBezierCurveToArgument = struct {
+    p1: CoordinatePair,
+    end: CoordinatePair,
+    pos: Pos,
+
+    fn parse(self: *Path) ?QuadraticBezierCurveToArgument {
+        const reset = self.pos;
+        var result: QuadraticBezierCurveToArgument = undefined;
+        if (CoordinatePair.parse(self)) |p| {
+            result.p1 = p;
+            result.pos = p.pos;
+        } else {
+            debug.assert(self.err != null);
+            // Error has already been set, but we need to reset our position
+            self.pos = reset;
+            return null;
+        }
+
+        self.consumeCommaWhitespace();
+
+        if (CoordinatePair.parse(self)) |p| {
+            result.end = p;
+            result.pos.end = p.pos.end;
+        } else {
+            debug.assert(self.err != null);
+            // Error has already been set, but we need to reset our position
+            self.pos = reset;
+            return null;
+        }
+
+        return result;
+    }
+};
+
 pub const SmoothQuadraticBezierCurveTo = struct {
     relative: bool,
     args: []CoordinatePair,
@@ -499,6 +915,620 @@ fn consumeWhitespace(self: *Path) void {
             0x0d => {},
             else => break,
         }
+    }
+}
+
+test "HorizontalLineTo" {
+    {
+        // Good, single, absolute
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "H 10 Z",
+        );
+        defer parser.deinit();
+
+        const got = try HorizontalLineTo.parse(&parser);
+        try testing.expectEqual(null, parser.err);
+        try testing.expectEqual(false, got.?.relative);
+        try testing.expectEqual(10, got.?.args[0].value);
+        try testing.expectEqual(2, got.?.args[0].pos.start);
+        try testing.expectEqual(3, got.?.args[0].pos.end);
+        try testing.expectEqual(0, got.?.pos.start);
+        try testing.expectEqual(3, got.?.pos.end);
+        try testing.expectEqual(4, parser.pos);
+    }
+
+    {
+        // Good, single, relative
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "h 10 Z",
+        );
+        defer parser.deinit();
+
+        const got = try HorizontalLineTo.parse(&parser);
+        try testing.expectEqual(null, parser.err);
+        try testing.expectEqual(true, got.?.relative);
+        try testing.expectEqual(10, got.?.args[0].value);
+        try testing.expectEqual(2, got.?.args[0].pos.start);
+        try testing.expectEqual(3, got.?.args[0].pos.end);
+        try testing.expectEqual(0, got.?.pos.start);
+        try testing.expectEqual(3, got.?.pos.end);
+        try testing.expectEqual(4, parser.pos);
+    }
+
+    {
+        // Good, multiple
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "H 10 11 12 Z",
+        );
+        defer parser.deinit();
+
+        const got = try HorizontalLineTo.parse(&parser);
+        try testing.expectEqual(null, parser.err);
+        try testing.expectEqual(false, got.?.relative);
+        try testing.expectEqual(10, got.?.args[0].value);
+        try testing.expectEqual(2, got.?.args[0].pos.start);
+        try testing.expectEqual(3, got.?.args[0].pos.end);
+        try testing.expectEqual(11, got.?.args[1].value);
+        try testing.expectEqual(5, got.?.args[1].pos.start);
+        try testing.expectEqual(6, got.?.args[1].pos.end);
+        try testing.expectEqual(12, got.?.args[2].value);
+        try testing.expectEqual(8, got.?.args[2].pos.start);
+        try testing.expectEqual(9, got.?.args[2].pos.end);
+        try testing.expectEqual(0, got.?.pos.start);
+        try testing.expectEqual(9, got.?.pos.end);
+        try testing.expectEqual(10, parser.pos);
+    }
+
+    {
+        // Bad, invalid command
+        //
+        // Note that we assert this on reading the production, but it should
+        // never come up in real-world use.
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "x 10",
+        );
+        defer parser.deinit();
+
+        try testing.expectEqual(null, HorizontalLineTo.parse(&parser));
+        try testing.expectEqual(.H_or_h, parser.err.?.expected);
+        try testing.expectEqual(0, parser.err.?.pos.start);
+        try testing.expectEqual(0, parser.err.?.pos.end);
+        try testing.expectEqual(0, parser.pos);
+        try testError(&parser, "at test:1:1: expected H_or_h, found 'x'\n");
+    }
+
+    {
+        // Bad, incomplete arg
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "H ,",
+        );
+        defer parser.deinit();
+
+        try testing.expectEqual(null, HorizontalLineTo.parse(&parser));
+        try testing.expectEqual(.number, parser.err.?.expected);
+        try testing.expectEqual(2, parser.err.?.pos.start);
+        try testing.expectEqual(2, parser.err.?.pos.end);
+        try testing.expectEqual(0, parser.pos);
+        try testError(&parser, "at test:1:3: expected number, found ','\n");
+    }
+}
+
+test "VerticalLineTo" {
+    {
+        // Good, single, absolute
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "V 10 Z",
+        );
+        defer parser.deinit();
+
+        const got = try VerticalLineTo.parse(&parser);
+        try testing.expectEqual(null, parser.err);
+        try testing.expectEqual(false, got.?.relative);
+        try testing.expectEqual(10, got.?.args[0].value);
+        try testing.expectEqual(2, got.?.args[0].pos.start);
+        try testing.expectEqual(3, got.?.args[0].pos.end);
+        try testing.expectEqual(0, got.?.pos.start);
+        try testing.expectEqual(3, got.?.pos.end);
+        try testing.expectEqual(4, parser.pos);
+    }
+
+    {
+        // Good, single, relative
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "v 10 Z",
+        );
+        defer parser.deinit();
+
+        const got = try VerticalLineTo.parse(&parser);
+        try testing.expectEqual(null, parser.err);
+        try testing.expectEqual(true, got.?.relative);
+        try testing.expectEqual(10, got.?.args[0].value);
+        try testing.expectEqual(2, got.?.args[0].pos.start);
+        try testing.expectEqual(3, got.?.args[0].pos.end);
+        try testing.expectEqual(0, got.?.pos.start);
+        try testing.expectEqual(3, got.?.pos.end);
+        try testing.expectEqual(4, parser.pos);
+    }
+
+    {
+        // Good, multiple
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "V 10 11 12 Z",
+        );
+        defer parser.deinit();
+
+        const got = try VerticalLineTo.parse(&parser);
+        try testing.expectEqual(null, parser.err);
+        try testing.expectEqual(false, got.?.relative);
+        try testing.expectEqual(10, got.?.args[0].value);
+        try testing.expectEqual(2, got.?.args[0].pos.start);
+        try testing.expectEqual(3, got.?.args[0].pos.end);
+        try testing.expectEqual(11, got.?.args[1].value);
+        try testing.expectEqual(5, got.?.args[1].pos.start);
+        try testing.expectEqual(6, got.?.args[1].pos.end);
+        try testing.expectEqual(12, got.?.args[2].value);
+        try testing.expectEqual(8, got.?.args[2].pos.start);
+        try testing.expectEqual(9, got.?.args[2].pos.end);
+        try testing.expectEqual(0, got.?.pos.start);
+        try testing.expectEqual(9, got.?.pos.end);
+        try testing.expectEqual(10, parser.pos);
+    }
+
+    {
+        // Bad, invalid command
+        //
+        // Note that we assert this on reading the production, but it should
+        // never come up in real-world use.
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "x 10",
+        );
+        defer parser.deinit();
+
+        try testing.expectEqual(null, VerticalLineTo.parse(&parser));
+        try testing.expectEqual(.V_or_v, parser.err.?.expected);
+        try testing.expectEqual(0, parser.err.?.pos.start);
+        try testing.expectEqual(0, parser.err.?.pos.end);
+        try testing.expectEqual(0, parser.pos);
+        try testError(&parser, "at test:1:1: expected V_or_v, found 'x'\n");
+    }
+
+    {
+        // Bad, incomplete arg
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "V ,",
+        );
+        defer parser.deinit();
+
+        try testing.expectEqual(null, VerticalLineTo.parse(&parser));
+        try testing.expectEqual(.number, parser.err.?.expected);
+        try testing.expectEqual(2, parser.err.?.pos.start);
+        try testing.expectEqual(2, parser.err.?.pos.end);
+        try testing.expectEqual(0, parser.pos);
+        try testError(&parser, "at test:1:3: expected number, found ','\n");
+    }
+}
+
+test "CurveTo" {
+    {
+        // Good, single, absolute
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "C 10,11 20,21 30,31",
+        );
+        defer parser.deinit();
+
+        const got = try CurveTo.parse(&parser);
+        try testing.expectEqual(null, parser.err);
+        try testing.expectEqual(false, got.?.relative);
+        try testing.expectEqual(10, got.?.args[0].p1.coordinates[0].number.value);
+        try testing.expectEqual(11, got.?.args[0].p1.coordinates[1].number.value);
+        try testing.expectEqual(20, got.?.args[0].p2.coordinates[0].number.value);
+        try testing.expectEqual(21, got.?.args[0].p2.coordinates[1].number.value);
+        try testing.expectEqual(30, got.?.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(31, got.?.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.?.args[0].pos.start);
+        try testing.expectEqual(18, got.?.args[0].pos.end);
+        try testing.expectEqual(0, got.?.pos.start);
+        try testing.expectEqual(18, got.?.pos.end);
+        try testing.expectEqual(19, parser.pos);
+    }
+
+    {
+        // Good, single, relative
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "c 10,11 20,21 30,31 Z",
+        );
+        defer parser.deinit();
+
+        const got = try CurveTo.parse(&parser);
+        try testing.expectEqual(null, parser.err);
+        try testing.expectEqual(true, got.?.relative);
+        try testing.expectEqual(10, got.?.args[0].p1.coordinates[0].number.value);
+        try testing.expectEqual(11, got.?.args[0].p1.coordinates[1].number.value);
+        try testing.expectEqual(20, got.?.args[0].p2.coordinates[0].number.value);
+        try testing.expectEqual(21, got.?.args[0].p2.coordinates[1].number.value);
+        try testing.expectEqual(30, got.?.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(31, got.?.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.?.args[0].pos.start);
+        try testing.expectEqual(18, got.?.args[0].pos.end);
+        try testing.expectEqual(0, got.?.pos.start);
+        try testing.expectEqual(18, got.?.pos.end);
+        try testing.expectEqual(19, parser.pos);
+    }
+
+    {
+        // Good, multiple
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            \\C 10,11 20,21 30,31
+            \\40,41 50,51 60,61
+            \\70,71 80,81 90,91 Z
+            ,
+        );
+        defer parser.deinit();
+
+        const got = try CurveTo.parse(&parser);
+        try testing.expectEqual(null, parser.err);
+        try testing.expectEqual(false, got.?.relative);
+        try testing.expectEqual(10, got.?.args[0].p1.coordinates[0].number.value);
+        try testing.expectEqual(11, got.?.args[0].p1.coordinates[1].number.value);
+        try testing.expectEqual(20, got.?.args[0].p2.coordinates[0].number.value);
+        try testing.expectEqual(21, got.?.args[0].p2.coordinates[1].number.value);
+        try testing.expectEqual(30, got.?.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(31, got.?.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.?.args[0].pos.start);
+        try testing.expectEqual(18, got.?.args[0].pos.end);
+        try testing.expectEqual(40, got.?.args[1].p1.coordinates[0].number.value);
+        try testing.expectEqual(41, got.?.args[1].p1.coordinates[1].number.value);
+        try testing.expectEqual(50, got.?.args[1].p2.coordinates[0].number.value);
+        try testing.expectEqual(51, got.?.args[1].p2.coordinates[1].number.value);
+        try testing.expectEqual(60, got.?.args[1].end.coordinates[0].number.value);
+        try testing.expectEqual(61, got.?.args[1].end.coordinates[1].number.value);
+        try testing.expectEqual(20, got.?.args[1].pos.start);
+        try testing.expectEqual(36, got.?.args[1].pos.end);
+        try testing.expectEqual(70, got.?.args[2].p1.coordinates[0].number.value);
+        try testing.expectEqual(71, got.?.args[2].p1.coordinates[1].number.value);
+        try testing.expectEqual(80, got.?.args[2].p2.coordinates[0].number.value);
+        try testing.expectEqual(81, got.?.args[2].p2.coordinates[1].number.value);
+        try testing.expectEqual(90, got.?.args[2].end.coordinates[0].number.value);
+        try testing.expectEqual(91, got.?.args[2].end.coordinates[1].number.value);
+        try testing.expectEqual(38, got.?.args[2].pos.start);
+        try testing.expectEqual(54, got.?.args[2].pos.end);
+        try testing.expectEqual(0, got.?.pos.start);
+        try testing.expectEqual(54, got.?.pos.end);
+        try testing.expectEqual(55, parser.pos);
+    }
+
+    {
+        // Bad, invalid command
+        //
+        // Note that we assert this on reading the production, but it should
+        // never come up in real-world use.
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "x 10,11 20,21 30,31",
+        );
+        defer parser.deinit();
+
+        try testing.expectEqual(null, CurveTo.parse(&parser));
+        try testing.expectEqual(.C_or_c, parser.err.?.expected);
+        try testing.expectEqual(0, parser.err.?.pos.start);
+        try testing.expectEqual(0, parser.err.?.pos.end);
+        try testing.expectEqual(0, parser.pos);
+        try testError(&parser, "at test:1:1: expected C_or_c, found 'x'\n");
+    }
+
+    {
+        // Bad, incomplete arg
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "C 10,11 20,Z",
+        );
+        defer parser.deinit();
+
+        try testing.expectEqual(null, CurveTo.parse(&parser));
+        try testing.expectEqual(.coordinate_pair, parser.err.?.expected);
+        try testing.expectEqual(8, parser.err.?.pos.start);
+        try testing.expectEqual(11, parser.err.?.pos.end);
+        try testing.expectEqual(0, parser.pos);
+        try testError(&parser, "at test:1:9: expected coordinate_pair, found '20,Z'\n");
+    }
+}
+
+test "SmoothCurveTo" {
+    {
+        // Good, single, absolute
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "S 10,11 20,21",
+        );
+        defer parser.deinit();
+
+        const got = try SmoothCurveTo.parse(&parser);
+        try testing.expectEqual(null, parser.err);
+        try testing.expectEqual(false, got.?.relative);
+        try testing.expectEqual(10, got.?.args[0].p2.coordinates[0].number.value);
+        try testing.expectEqual(11, got.?.args[0].p2.coordinates[1].number.value);
+        try testing.expectEqual(20, got.?.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(21, got.?.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.?.args[0].pos.start);
+        try testing.expectEqual(12, got.?.args[0].pos.end);
+        try testing.expectEqual(0, got.?.pos.start);
+        try testing.expectEqual(12, got.?.pos.end);
+        try testing.expectEqual(13, parser.pos);
+    }
+
+    {
+        // Good, single, relative
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "s 10,11 20,21 Z",
+        );
+        defer parser.deinit();
+
+        const got = try SmoothCurveTo.parse(&parser);
+        try testing.expectEqual(null, parser.err);
+        try testing.expectEqual(true, got.?.relative);
+        try testing.expectEqual(10, got.?.args[0].p2.coordinates[0].number.value);
+        try testing.expectEqual(11, got.?.args[0].p2.coordinates[1].number.value);
+        try testing.expectEqual(20, got.?.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(21, got.?.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.?.args[0].pos.start);
+        try testing.expectEqual(12, got.?.args[0].pos.end);
+        try testing.expectEqual(0, got.?.pos.start);
+        try testing.expectEqual(12, got.?.pos.end);
+        try testing.expectEqual(13, parser.pos);
+    }
+
+    {
+        // Good, multiple
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            \\S 10,11 20,21
+            \\30,31 40,41
+            \\50,51 60,61 Z
+            ,
+        );
+        defer parser.deinit();
+
+        const got = try SmoothCurveTo.parse(&parser);
+        try testing.expectEqual(null, parser.err);
+        try testing.expectEqual(false, got.?.relative);
+        try testing.expectEqual(10, got.?.args[0].p2.coordinates[0].number.value);
+        try testing.expectEqual(11, got.?.args[0].p2.coordinates[1].number.value);
+        try testing.expectEqual(20, got.?.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(21, got.?.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.?.args[0].pos.start);
+        try testing.expectEqual(12, got.?.args[0].pos.end);
+        try testing.expectEqual(30, got.?.args[1].p2.coordinates[0].number.value);
+        try testing.expectEqual(31, got.?.args[1].p2.coordinates[1].number.value);
+        try testing.expectEqual(40, got.?.args[1].end.coordinates[0].number.value);
+        try testing.expectEqual(41, got.?.args[1].end.coordinates[1].number.value);
+        try testing.expectEqual(14, got.?.args[1].pos.start);
+        try testing.expectEqual(24, got.?.args[1].pos.end);
+        try testing.expectEqual(50, got.?.args[2].p2.coordinates[0].number.value);
+        try testing.expectEqual(51, got.?.args[2].p2.coordinates[1].number.value);
+        try testing.expectEqual(60, got.?.args[2].end.coordinates[0].number.value);
+        try testing.expectEqual(61, got.?.args[2].end.coordinates[1].number.value);
+        try testing.expectEqual(26, got.?.args[2].pos.start);
+        try testing.expectEqual(36, got.?.args[2].pos.end);
+        try testing.expectEqual(0, got.?.pos.start);
+        try testing.expectEqual(36, got.?.pos.end);
+        try testing.expectEqual(37, parser.pos);
+    }
+
+    {
+        // Bad, invalid command
+        //
+        // Note that we assert this on reading the production, but it should
+        // never come up in real-world use.
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "x 10,11 20,21",
+        );
+        defer parser.deinit();
+
+        try testing.expectEqual(null, SmoothCurveTo.parse(&parser));
+        try testing.expectEqual(.S_or_s, parser.err.?.expected);
+        try testing.expectEqual(0, parser.err.?.pos.start);
+        try testing.expectEqual(0, parser.err.?.pos.end);
+        try testing.expectEqual(0, parser.pos);
+        try testError(&parser, "at test:1:1: expected S_or_s, found 'x'\n");
+    }
+
+    {
+        // Bad, incomplete arg
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "S 10,11 20,Z",
+        );
+        defer parser.deinit();
+
+        try testing.expectEqual(null, SmoothCurveTo.parse(&parser));
+        try testing.expectEqual(.coordinate_pair, parser.err.?.expected);
+        try testing.expectEqual(8, parser.err.?.pos.start);
+        try testing.expectEqual(11, parser.err.?.pos.end);
+        try testing.expectEqual(0, parser.pos);
+        try testError(&parser, "at test:1:9: expected coordinate_pair, found '20,Z'\n");
+    }
+}
+
+test "QuadraticBezierCurveTo" {
+    {
+        // Good, single, absolute
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "Q 10,11 20,21",
+        );
+        defer parser.deinit();
+
+        const got = try QuadraticBezierCurveTo.parse(&parser);
+        try testing.expectEqual(null, parser.err);
+        try testing.expectEqual(false, got.?.relative);
+        try testing.expectEqual(10, got.?.args[0].p1.coordinates[0].number.value);
+        try testing.expectEqual(11, got.?.args[0].p1.coordinates[1].number.value);
+        try testing.expectEqual(20, got.?.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(21, got.?.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.?.args[0].pos.start);
+        try testing.expectEqual(12, got.?.args[0].pos.end);
+        try testing.expectEqual(0, got.?.pos.start);
+        try testing.expectEqual(12, got.?.pos.end);
+        try testing.expectEqual(13, parser.pos);
+    }
+
+    {
+        // Good, single, relative
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "q 10,11 20,21 Z",
+        );
+        defer parser.deinit();
+
+        const got = try QuadraticBezierCurveTo.parse(&parser);
+        try testing.expectEqual(null, parser.err);
+        try testing.expectEqual(true, got.?.relative);
+        try testing.expectEqual(10, got.?.args[0].p1.coordinates[0].number.value);
+        try testing.expectEqual(11, got.?.args[0].p1.coordinates[1].number.value);
+        try testing.expectEqual(20, got.?.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(21, got.?.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.?.args[0].pos.start);
+        try testing.expectEqual(12, got.?.args[0].pos.end);
+        try testing.expectEqual(0, got.?.pos.start);
+        try testing.expectEqual(12, got.?.pos.end);
+        try testing.expectEqual(13, parser.pos);
+    }
+
+    {
+        // Good, multiple
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            \\Q 10,11 20,21
+            \\30,31 40,41
+            \\50,51 60,61 Z
+            ,
+        );
+        defer parser.deinit();
+
+        const got = try QuadraticBezierCurveTo.parse(&parser);
+        try testing.expectEqual(null, parser.err);
+        try testing.expectEqual(false, got.?.relative);
+        try testing.expectEqual(10, got.?.args[0].p1.coordinates[0].number.value);
+        try testing.expectEqual(11, got.?.args[0].p1.coordinates[1].number.value);
+        try testing.expectEqual(20, got.?.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(21, got.?.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.?.args[0].pos.start);
+        try testing.expectEqual(12, got.?.args[0].pos.end);
+        try testing.expectEqual(30, got.?.args[1].p1.coordinates[0].number.value);
+        try testing.expectEqual(31, got.?.args[1].p1.coordinates[1].number.value);
+        try testing.expectEqual(40, got.?.args[1].end.coordinates[0].number.value);
+        try testing.expectEqual(41, got.?.args[1].end.coordinates[1].number.value);
+        try testing.expectEqual(14, got.?.args[1].pos.start);
+        try testing.expectEqual(24, got.?.args[1].pos.end);
+        try testing.expectEqual(50, got.?.args[2].p1.coordinates[0].number.value);
+        try testing.expectEqual(51, got.?.args[2].p1.coordinates[1].number.value);
+        try testing.expectEqual(60, got.?.args[2].end.coordinates[0].number.value);
+        try testing.expectEqual(61, got.?.args[2].end.coordinates[1].number.value);
+        try testing.expectEqual(26, got.?.args[2].pos.start);
+        try testing.expectEqual(36, got.?.args[2].pos.end);
+        try testing.expectEqual(0, got.?.pos.start);
+        try testing.expectEqual(36, got.?.pos.end);
+        try testing.expectEqual(37, parser.pos);
+    }
+
+    {
+        // Bad, invalid command
+        //
+        // Note that we assert this on reading the production, but it should
+        // never come up in real-world use.
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "x 10,11 20,21",
+        );
+        defer parser.deinit();
+
+        try testing.expectEqual(null, QuadraticBezierCurveTo.parse(&parser));
+        try testing.expectEqual(.Q_or_q, parser.err.?.expected);
+        try testing.expectEqual(0, parser.err.?.pos.start);
+        try testing.expectEqual(0, parser.err.?.pos.end);
+        try testing.expectEqual(0, parser.pos);
+        try testError(&parser, "at test:1:1: expected Q_or_q, found 'x'\n");
+    }
+
+    {
+        // Bad, incomplete arg
+        var parser = init(
+            testing.allocator,
+            "test",
+            1,
+            "Q 10,11 20,Z",
+        );
+        defer parser.deinit();
+
+        try testing.expectEqual(null, QuadraticBezierCurveTo.parse(&parser));
+        try testing.expectEqual(.coordinate_pair, parser.err.?.expected);
+        try testing.expectEqual(8, parser.err.?.pos.start);
+        try testing.expectEqual(11, parser.err.?.pos.end);
+        try testing.expectEqual(0, parser.pos);
+        try testError(&parser, "at test:1:9: expected coordinate_pair, found '20,Z'\n");
     }
 }
 
