@@ -1,3 +1,23 @@
+// SPDX-License-Identifier: MPL-2.0
+//   Copyright © 2024 Chris Marchesi
+
+/// Path is an SVG path node parser and also a path node representation.
+///
+/// To use this parser, pass in an allocator and the path node data into parse:
+///
+/// ```
+/// var parsed = Path.parse(alloc, data);
+/// defer parsed.deinit();
+/// for (parsed.nodes) |n| {
+///   ...
+/// }
+/// ```
+///
+/// Only memory allocation errors are reported as actual errors. Errors in
+/// parsing are non-fatal; when encountered, all nodes up to the last valid
+/// node are returned, and the parsing errors is stored in err.
+const Path = @This();
+
 const std = @import("std");
 const debug = @import("std").debug;
 const fmt = @import("std").fmt;
@@ -7,7 +27,12 @@ const log = @import("std").log;
 const mem = @import("std").mem;
 const testing = @import("std").testing;
 
-const Path = @This();
+/// The nodes that belong to this path. Populated by parse.
+nodes: []Node = &[_]Node{},
+
+/// Any non-fatal error encountered during parsing. Note that in this
+/// situation, parsing stops at the last valid node.
+err: ?ParseError = null,
 
 // All parsed items are stored in the arena, e.g., any ArrayLists that we use
 // to build multi-arg nodes use this arena as a backing store. deinit clears
@@ -17,41 +42,18 @@ arena: heap.ArenaAllocator,
 data: []const u8,
 pos: usize = 0,
 
-nodes: []Node = &[_]Node{},
+/// Returns a parsed path node set. Call deinit to de-allocate path data.
+pub fn parse(alloc: mem.Allocator, data: []const u8) !Path {
+    var result = init(alloc, data);
+    errdefer result.deinit();
+    try result._parse();
+    return result;
+}
 
-err: ?ParseError = null,
-
-const ParseError = struct {
-    expected: Expected,
-    pos: Pos,
-
-    const Expected = enum {
-        A_or_a,
-        C_or_c,
-        H_or_h,
-        L_or_l,
-        M_or_m,
-        Q_or_q,
-        S_or_s,
-        T_or_t,
-        V_or_v,
-        Z_or_z,
-        coordinate_pair,
-        drawto_command,
-        flag,
-        moveto_command,
-        nonnegative_number,
-        number,
-    };
-
-    fn init(expected: Expected, pos: Pos) ParseError {
-        return .{
-            .expected = expected,
-            .pos = pos,
-        };
-    }
-};
-
+/// Initializes a new path parser with the supplied allocator and path data.
+///
+/// Note: most consumers will want to use parse so that parsing can be done in
+/// initialization.
 pub fn init(alloc: mem.Allocator, data: []const u8) Path {
     return .{
         .arena = heap.ArenaAllocator.init(alloc),
@@ -59,68 +61,12 @@ pub fn init(alloc: mem.Allocator, data: []const u8) Path {
     };
 }
 
+/// Releases stored node data. The parser is invalid to use after this.
 pub fn deinit(self: *Path) void {
     self.arena.deinit();
 }
 
-fn setErr(self: *Path, expected: ParseError.Expected, start: usize, end: usize, reset: usize) void {
-    self.err = ParseError.init(expected, .{ .start = start, .end = end });
-    self.pos = reset;
-}
-
-pub fn fmtErr(self: *Path, writer: anytype) !void {
-    if (self.err) |e| {
-        try fmt.format(
-            writer,
-            "at pos {d}: expected {s}, found ",
-            .{
-                if (e.pos.start < self.data.len) e.pos.start + 1 else self.data.len,
-                @tagName(e.expected),
-            },
-        );
-        if (e.pos.start < self.data.len) {
-            try fmt.format(writer, "'{s}'\n", .{self.data[e.pos.start .. e.pos.end + 1]});
-        } else {
-            try fmt.format(writer, "end of path data\n", .{});
-        }
-    }
-}
-
-/// The character position in the data for a particular element, zero indexed.
-///
-/// Note that reported positions include line breaks and are 1-indexed.
-pub const Pos = struct {
-    start: usize,
-    end: usize,
-};
-
-pub const NodeType = enum {
-    move_to,
-    close_path,
-    line_to,
-    horizontal_line_to,
-    vertical_line_to,
-    curve_to,
-    smooth_curve_to,
-    quadratic_bezier_curve_to,
-    smooth_quadratic_bezier_curve_to,
-    elliptical_arc,
-};
-
-pub const Node = union(NodeType) {
-    move_to: MoveTo,
-    close_path: ClosePath,
-    line_to: LineTo,
-    horizontal_line_to: HorizontalLineTo,
-    vertical_line_to: VerticalLineTo,
-    curve_to: CurveTo,
-    smooth_curve_to: SmoothCurveTo,
-    quadratic_bezier_curve_to: QuadraticBezierCurveTo,
-    smooth_quadratic_bezier_curve_to: SmoothQuadraticBezierCurveTo,
-    elliptical_arc: EllipticalArc,
-};
-
-fn parse(self: *Path) !void {
+fn _parse(self: *Path) !void {
     var result = std.ArrayList(Node).init(self.arena.allocator());
     errdefer result.deinit();
 
@@ -205,6 +151,96 @@ fn parse(self: *Path) !void {
     self.nodes = result.items;
 }
 
+/// Represents an error encountered during parsing.
+pub const ParseError = struct {
+    expected: Expected,
+    pos: Pos,
+
+    const Expected = enum {
+        A_or_a,
+        C_or_c,
+        H_or_h,
+        L_or_l,
+        M_or_m,
+        Q_or_q,
+        S_or_s,
+        T_or_t,
+        V_or_v,
+        Z_or_z,
+        coordinate_pair,
+        drawto_command,
+        flag,
+        moveto_command,
+        nonnegative_number,
+        number,
+    };
+
+    fn init(expected: Expected, pos: Pos) ParseError {
+        return .{
+            .expected = expected,
+            .pos = pos,
+        };
+    }
+};
+
+/// Prints the last error to the supplied writer.
+pub fn fmtErr(self: *Path, writer: anytype) !void {
+    if (self.err) |e| {
+        try fmt.format(
+            writer,
+            "at pos {d}: expected {s}, found ",
+            .{
+                if (e.pos.start < self.data.len) e.pos.start + 1 else self.data.len,
+                @tagName(e.expected),
+            },
+        );
+        if (e.pos.start < self.data.len) {
+            try fmt.format(writer, "'{s}'\n", .{self.data[e.pos.start .. e.pos.end + 1]});
+        } else {
+            try fmt.format(writer, "end of path data\n", .{});
+        }
+    }
+}
+
+fn setErr(self: *Path, expected: ParseError.Expected, start: usize, end: usize, reset: usize) void {
+    self.err = ParseError.init(expected, .{ .start = start, .end = end });
+    self.pos = reset;
+}
+
+/// The character position in the data for a particular element, zero indexed.
+pub const Pos = struct {
+    start: usize,
+    end: usize,
+};
+
+pub const NodeType = enum {
+    move_to,
+    close_path,
+    line_to,
+    horizontal_line_to,
+    vertical_line_to,
+    curve_to,
+    smooth_curve_to,
+    quadratic_bezier_curve_to,
+    smooth_quadratic_bezier_curve_to,
+    elliptical_arc,
+};
+
+/// The union of all valid path nodes.
+pub const Node = union(NodeType) {
+    move_to: MoveTo,
+    close_path: ClosePath,
+    line_to: LineTo,
+    horizontal_line_to: HorizontalLineTo,
+    vertical_line_to: VerticalLineTo,
+    curve_to: CurveTo,
+    smooth_curve_to: SmoothCurveTo,
+    quadratic_bezier_curve_to: QuadraticBezierCurveTo,
+    smooth_quadratic_bezier_curve_to: SmoothQuadraticBezierCurveTo,
+    elliptical_arc: EllipticalArc,
+};
+
+/// Represents a moveto command ('M' or 'm').
 pub const MoveTo = struct {
     relative: bool,
     args: []CoordinatePair,
@@ -266,6 +302,7 @@ pub const MoveTo = struct {
     }
 };
 
+/// Represents a closepath command ('Z' or 'z').
 pub const ClosePath = struct {
     pos: Pos,
 
@@ -289,6 +326,7 @@ pub const ClosePath = struct {
     }
 };
 
+/// Represents a lineto command ('L' or 'l').
 pub const LineTo = struct {
     relative: bool,
     args: []CoordinatePair,
@@ -350,6 +388,7 @@ pub const LineTo = struct {
     }
 };
 
+/// Represents a horizontal lineto command ('H' or 'h').
 pub const HorizontalLineTo = struct {
     relative: bool,
     args: []Number,
@@ -409,6 +448,7 @@ pub const HorizontalLineTo = struct {
     }
 };
 
+/// Represents a vertical lineto command ('V' or 'v').
 pub const VerticalLineTo = struct {
     relative: bool,
     args: []Number,
@@ -468,6 +508,7 @@ pub const VerticalLineTo = struct {
     }
 };
 
+/// Represents a curveto command ('C' or 'c').
 pub const CurveTo = struct {
     relative: bool,
     args: []CurveToArgument,
@@ -529,6 +570,7 @@ pub const CurveTo = struct {
     }
 };
 
+/// Represents the 3-pair argument to a curveto command ('C' or 'c').
 pub const CurveToArgument = struct {
     p1: CoordinatePair,
     p2: CoordinatePair,
@@ -576,6 +618,7 @@ pub const CurveToArgument = struct {
     }
 };
 
+/// Represents a smooth curveto command ('S' or 's').
 pub const SmoothCurveTo = struct {
     relative: bool,
     args: []SmoothCurveToArgument,
@@ -637,6 +680,7 @@ pub const SmoothCurveTo = struct {
     }
 };
 
+/// Represents the 2-pair argument to a smooth curveto command ('S' or 's').
 pub const SmoothCurveToArgument = struct {
     p2: CoordinatePair,
     end: CoordinatePair,
@@ -671,6 +715,7 @@ pub const SmoothCurveToArgument = struct {
     }
 };
 
+/// Represents a quadratic curveto command ('Q' or 'q').
 pub const QuadraticBezierCurveTo = struct {
     relative: bool,
     args: []QuadraticBezierCurveToArgument,
@@ -732,6 +777,7 @@ pub const QuadraticBezierCurveTo = struct {
     }
 };
 
+/// Represents the 2-pair argument to a quadratic curveto command ('Q' or 'q').
 pub const QuadraticBezierCurveToArgument = struct {
     p1: CoordinatePair,
     end: CoordinatePair,
@@ -766,6 +812,7 @@ pub const QuadraticBezierCurveToArgument = struct {
     }
 };
 
+/// Represents a smooth quadratic curveto command ('T' or 't').
 pub const SmoothQuadraticBezierCurveTo = struct {
     relative: bool,
     args: []CoordinatePair,
@@ -827,6 +874,7 @@ pub const SmoothQuadraticBezierCurveTo = struct {
     }
 };
 
+/// Represents an elliptical arc command ('A' or 'a').
 pub const EllipticalArc = struct {
     relative: bool,
     args: []EllipticalArcArgument,
@@ -888,6 +936,7 @@ pub const EllipticalArc = struct {
     }
 };
 
+/// Represents the set of parameters to an elliptical arc command ('A' or 'a').
 pub const EllipticalArcArgument = struct {
     rx: Number,
     ry: Number,
@@ -980,6 +1029,7 @@ pub const EllipticalArcArgument = struct {
     }
 };
 
+/// Represents a co-ordinate pair (e.g., x,y).
 pub const CoordinatePair = struct {
     coordinates: [2]Coordinate,
     pos: Pos,
@@ -1014,6 +1064,8 @@ pub const CoordinatePair = struct {
     }
 };
 
+/// Represents a single co-ordinate, usually expected as part of a co-ordinate
+/// pair, or singular for the horizontal or vertical line commands.
 pub const Coordinate = struct {
     number: Number,
     pos: Pos,
@@ -1030,6 +1082,7 @@ pub const Coordinate = struct {
     }
 };
 
+// Represents a flag (0 or 1).
 pub const Flag = struct {
     value: bool,
     pos: Pos,
@@ -1064,8 +1117,13 @@ pub const Flag = struct {
     }
 };
 
+/// Represents an IEEE-754 double-precision floating point number.
+///
+/// Note that values are stored fully parsed including sign and exponent. For
+/// details of how the number was actually expressed, check the unparsed data
+/// against the position data reported.
 pub const Number = struct {
-    value: f64, // Actual parsed value with sign and exponent
+    value: f64,
     pos: Pos,
 
     fn parse(self: *Path) ?Number {
@@ -1179,7 +1237,7 @@ test "parse" {
         );
         defer parser.deinit();
 
-        try parser.parse();
+        try parser._parse();
         try testing.expectEqual(null, parser.err);
         try testing.expectEqual(4, parser.nodes.len);
         try testing.expectEqual(false, parser.nodes[0].move_to.relative);
@@ -1233,7 +1291,7 @@ test "parse" {
         );
         defer parser.deinit();
 
-        try parser.parse();
+        try parser._parse();
         try testing.expectEqual(null, parser.err);
         try testing.expectEqual(20, parser.nodes.len);
         try testing.expect(parser.nodes[0] == .move_to);
@@ -1266,7 +1324,7 @@ test "parse" {
         );
         defer parser.deinit();
 
-        try parser.parse();
+        try parser._parse();
         try testing.expectEqual(2, parser.nodes.len);
         try testing.expect(parser.nodes[0] == .move_to);
         try testing.expect(parser.nodes[1] == .line_to);
@@ -1285,7 +1343,7 @@ test "parse" {
         );
         defer parser.deinit();
 
-        try parser.parse();
+        try parser._parse();
         try testing.expectEqual(2, parser.nodes.len);
         try testing.expect(parser.nodes[0] == .move_to);
         try testing.expect(parser.nodes[1] == .line_to);
@@ -1304,7 +1362,7 @@ test "parse" {
         );
         defer parser.deinit();
 
-        try parser.parse();
+        try parser._parse();
         try testing.expectEqual(0, parser.nodes.len);
         try testing.expectEqual(.M_or_m, parser.err.?.expected);
         try testing.expectEqual(0, parser.err.?.pos.start);
