@@ -4,7 +4,7 @@ zig-svg provides abstractions for SVG paths and a parser.
 
 Note that this library only parses path data. We don't abstract all of SVG as
 generally how you handle SVG is up to the renderer. Check out
-(zig-xml)[https://github.com/nektro/zig-xml] for parsing the SVG XML itself.
+[zig-xml](https://github.com/nektro/zig-xml) for parsing the SVG XML itself.
 
 ## Parsing
 
