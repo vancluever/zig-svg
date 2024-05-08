@@ -1,17 +1,19 @@
 # zig-svg
 
-zig-svg provides abstractions for SVG paths and a parser.
+zig-svg provides abstractions for SVG attributes.
 
-Note that this library only parses path data. We don't abstract all of SVG as
-generally how you handle SVG is up to the renderer. Check out
-[zig-xml](https://github.com/nektro/zig-xml) for parsing the SVG XML itself.
+Note that this library only parses specific SVG attributes that need parsing
+outside of general XML, such as paths, colors, or co-ordinate specifications.
+
+For XML parsers, here are a couple:
+
+ * https://github.com/ianprime0509/zig-xml
+ * https://github.com/nektro/zig-xml
 
 ## Parsing
 
-To parse an SVG path, run `Path.parse`. This function takes an allocator and a
-[]u8 with the path data in it.
-
-After this is done, your parsed nodes will be available in the `nodes` attribute.
+All useful primitives will have a parse function that you can call to perform
+the parsing. An example for path is below:
 
 ```zig
 const Path = @import("svg").Path;
@@ -25,10 +27,9 @@ for (path.nodes) |n| {
 ## Errors
 
 Only errors in allocation are reported as errors. All other errors are
-non-fatal and are reported in the `err` attribute instead. In this case, as per
-the [spec](https://www.w3.org/TR/SVG11/implnote.html#ErrorProcessing), all
-valid path nodes are parsed and returned so that you can process up to the
-error.
+non-fatal and are reported in the `err` attribute instead. This allows for
+partial SVG processing as per the
+[spec](https://www.w3.org/TR/SVG11/implnote.html#ErrorProcessing).
 
 ```zig
 const io = @import("std").io;
@@ -39,7 +40,7 @@ defer path.deinit();
 if (path.err) |err| {
     const errWriter = io.getStdErr();
     buf.format(errWriter, "error processing SVG: ");
-    try path.fmtErr();
+    try path.fmtErr(errWriter);
 }
 
 for (path.nodes) |n| {

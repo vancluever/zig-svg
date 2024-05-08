@@ -32,6 +32,7 @@
             packages = with pkgs; [
               zig_0_12
               zls.packages.${system}.zls
+              python3
             ];
           }
         );
