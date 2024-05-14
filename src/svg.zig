@@ -1813,6 +1813,37 @@ pub const Parser = struct {
         }
     }
 
+    /// Renders the error; the returned slice is allocated with the supplied
+    /// allocator and is owned by the caller.
+    ///
+    /// Note that this does not render newlines.
+    pub fn allocPrintErr(self: *Parser, alloc: mem.Allocator) ![]const u8 {
+        if (self.err) |e| {
+            if (e.pos.start < self.data.len) {
+                return fmt.allocPrint(
+                    alloc,
+                    "at pos {d}: expected {s}, found '{s}'",
+                    .{
+                        if (e.pos.start < self.data.len) e.pos.start + 1 else self.data.len,
+                        e.expected.string(),
+                        self.data[e.pos.start .. e.pos.end + 1],
+                    },
+                );
+            } else {
+                return fmt.allocPrint(
+                    alloc,
+                    "at pos {d}: expected {s}, found end of data",
+                    .{
+                        if (e.pos.start < self.data.len) e.pos.start + 1 else self.data.len,
+                        e.expected.string(),
+                    },
+                );
+            }
+        }
+
+        return alloc.alloc(u8, 0);
+    }
+
     fn setErr(self: *Parser, expected: Error.Expected, start: usize, end: usize, reset: usize) void {
         self.err = .{ .expected = expected, .pos = .{ .start = start, .end = end } };
         self.pos = reset;
@@ -4010,5 +4041,54 @@ test "fmtErr" {
         };
 
         try testError(&parser, "at pos 9: expected coordinate pair, found 'ghi'\n");
+    }
+}
+
+test "allocPrintErr" {
+    {
+        // Basic
+        var parser: Parser = .{
+            .data = "abc def ghi",
+            .err = .{
+                .expected = .coordinate_pair,
+                .pos = .{
+                    .start = 8,
+                    .end = 10,
+                },
+            },
+        };
+
+        const got = try parser.allocPrintErr(testing.allocator);
+        defer testing.allocator.free(got);
+        try testing.expectEqualSlices(u8, "at pos 9: expected coordinate pair, found 'ghi'", got);
+    }
+
+    {
+        // End of data
+        var parser: Parser = .{
+            .data = "abc def ghi",
+            .err = .{
+                .expected = .coordinate_pair,
+                .pos = .{
+                    .start = 11,
+                    .end = 11,
+                },
+            },
+        };
+
+        const got = try parser.allocPrintErr(testing.allocator);
+        defer testing.allocator.free(got);
+        try testing.expectEqualSlices(u8, "at pos 11: expected coordinate pair, found end of data", got);
+    }
+
+    {
+        // No error
+        var parser: Parser = .{
+            .data = "abc def ghi",
+        };
+
+        const got = try parser.allocPrintErr(testing.allocator);
+        defer testing.allocator.free(got);
+        try testing.expectEqualSlices(u8, "", got);
     }
 }
