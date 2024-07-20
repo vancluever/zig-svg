@@ -1456,6 +1456,210 @@ pub const Color = struct {
     }
 };
 
+/// Represents a CSS2 length value, based on the standard of 96 pixels/user
+/// units per inch. In our nomenclature, a pixel is the same as a user unit.
+pub const Length = struct {
+    parser: Parser,
+    number: Number,
+    unit: Unit,
+
+    const Unit = enum {
+        em,
+        ex,
+        px,
+        in,
+        cm,
+        mm,
+        pt,
+        pc,
+        percent,
+    };
+
+    /// Returns the value of the length as pixels.
+    ///
+    /// relative_px needs to be supplied to get meaningful values out of em,
+    /// ex, and percent units.
+    pub fn toPixels(self: *const Length, relative_px: f64) f64 {
+        return switch (self.unit) {
+            .em => self.number.value * relative_px,
+            .ex => self.number.value * relative_px,
+            .px => self.number.value,
+            .in => self.number.value * 96,
+            .cm => self.number.value / 2.54 * 96,
+            .mm => self.number.value / 25.4 * 96,
+            .pt => self.number.value / 72 * 96,
+            .pc => self.number.value * 12 / 72 * 96,
+            .percent => self.number.value / 100 * relative_px,
+        };
+    }
+
+    /// Parses a CSS2 length value.
+    ///
+    /// This should be used for length values contained in normal presentation
+    /// attributes. To parse length values contained in `style` attributes, use
+    /// `parseStyle`.
+    pub fn parse(data: []const u8) Length {
+        var result: Length = .{
+            .parser = .{ .data = data },
+            .number = .{ .value = 0, .pos = .{ .start = 0, .end = 0 } },
+            .unit = .px,
+        };
+
+        if (Number.parse(&result.parser)) |v| {
+            result.number = v;
+        } else {
+            result.parser.setErr(.number, 0, result.parser.pos, 0);
+            return result;
+        }
+
+        if (parseUnitPresentiation(result.parser.data[result.parser.pos..])) |parsed| {
+            result.parser.pos = result.parser.data.len;
+            result.unit = parsed;
+        } else {
+            result.parser.setErr(
+                .presentation_length_unit,
+                result.parser.pos,
+                result.parser.data.len - 1,
+                result.parser.pos,
+            );
+        }
+
+        return result;
+    }
+
+    /// Parses a CSS2 length value.
+    ///
+    /// This should be used for length values contained in `style` attributes.
+    /// To parse length values contained in presentation attributes, use
+    /// `parse`.
+    pub fn parseStyle(data: []const u8) Length {
+        var result: Length = .{
+            .parser = .{ .data = data },
+            .number = .{ .value = 0, .pos = .{ .start = 0, .end = 0 } },
+            .unit = .px,
+        };
+
+        if (Number.parse(&result.parser)) |v| {
+            result.number = v;
+        } else {
+            result.parser.setErr(.number, 0, result.parser.pos, 0);
+            return result;
+        }
+
+        if (parseUnitStyle(result.parser.data[result.parser.pos..])) |parsed| {
+            result.parser.pos = result.parser.data.len;
+            result.unit = parsed;
+        } else {
+            result.parser.setErr(
+                .style_length_unit,
+                result.parser.pos,
+                result.parser.data.len - 1,
+                result.parser.pos,
+            );
+        }
+
+        return result;
+    }
+
+    fn parseUnitStyle(value: []const u8) ?Unit {
+        if (value.len == 0) {
+            return .px;
+        } else if (mem.eql(u8, value, "em")) {
+            return .em;
+        } else if (mem.eql(u8, value, "eM")) {
+            return .em;
+        } else if (mem.eql(u8, value, "Em")) {
+            return .em;
+        } else if (mem.eql(u8, value, "EM")) {
+            return .em;
+        } else if (mem.eql(u8, value, "ex")) {
+            return .ex;
+        } else if (mem.eql(u8, value, "eX")) {
+            return .ex;
+        } else if (mem.eql(u8, value, "Ex")) {
+            return .ex;
+        } else if (mem.eql(u8, value, "EX")) {
+            return .ex;
+        } else if (mem.eql(u8, value, "px")) {
+            return .px;
+        } else if (mem.eql(u8, value, "pX")) {
+            return .px;
+        } else if (mem.eql(u8, value, "Px")) {
+            return .px;
+        } else if (mem.eql(u8, value, "PX")) {
+            return .px;
+        } else if (mem.eql(u8, value, "in")) {
+            return .in;
+        } else if (mem.eql(u8, value, "iN")) {
+            return .in;
+        } else if (mem.eql(u8, value, "In")) {
+            return .in;
+        } else if (mem.eql(u8, value, "IN")) {
+            return .in;
+        } else if (mem.eql(u8, value, "cm")) {
+            return .cm;
+        } else if (mem.eql(u8, value, "cM")) {
+            return .cm;
+        } else if (mem.eql(u8, value, "Cm")) {
+            return .cm;
+        } else if (mem.eql(u8, value, "CM")) {
+            return .cm;
+        } else if (mem.eql(u8, value, "mm")) {
+            return .mm;
+        } else if (mem.eql(u8, value, "mM")) {
+            return .mm;
+        } else if (mem.eql(u8, value, "Mm")) {
+            return .mm;
+        } else if (mem.eql(u8, value, "MM")) {
+            return .mm;
+        } else if (mem.eql(u8, value, "pt")) {
+            return .pt;
+        } else if (mem.eql(u8, value, "pT")) {
+            return .pt;
+        } else if (mem.eql(u8, value, "Pt")) {
+            return .pt;
+        } else if (mem.eql(u8, value, "PT")) {
+            return .pt;
+        } else if (mem.eql(u8, value, "pc")) {
+            return .pc;
+        } else if (mem.eql(u8, value, "pC")) {
+            return .pc;
+        } else if (mem.eql(u8, value, "Pc")) {
+            return .pc;
+        } else if (mem.eql(u8, value, "PC")) {
+            return .pc;
+        }
+
+        return null;
+    }
+
+    fn parseUnitPresentiation(value: []const u8) ?Unit {
+        if (value.len == 0) {
+            return .px;
+        } else if (mem.eql(u8, value, "em")) {
+            return .em;
+        } else if (mem.eql(u8, value, "ex")) {
+            return .ex;
+        } else if (mem.eql(u8, value, "px")) {
+            return .px;
+        } else if (mem.eql(u8, value, "in")) {
+            return .in;
+        } else if (mem.eql(u8, value, "cm")) {
+            return .cm;
+        } else if (mem.eql(u8, value, "mm")) {
+            return .mm;
+        } else if (mem.eql(u8, value, "pt")) {
+            return .pt;
+        } else if (mem.eql(u8, value, "pc")) {
+            return .pc;
+        } else if (mem.eql(u8, value, "%")) {
+            return .percent;
+        }
+
+        return null;
+    }
+};
+
 /// Represents a co-ordinate pair (e.g., x,y).
 pub const CoordinatePair = struct {
     coordinates: [2]Coordinate,
@@ -1760,6 +1964,8 @@ pub const Parser = struct {
             nonnegative_number,
             number,
             percent,
+            presentation_length_unit,
+            style_length_unit,
             rgb_hex,
             rgb_paren,
             right_paren,
@@ -1786,6 +1992,8 @@ pub const Parser = struct {
                     .nonnegative_number => "non-negative number",
                     .number => "number",
                     .percent => "'%'",
+                    .presentation_length_unit => "case-sensitive length unit or '%'",
+                    .style_length_unit => "case-insensitive length unit",
                     .rgb_hex => "RGB hex pattern (#RGB or #RRGGBB)",
                     .rgb_paren => "'rgb('",
                     .right_paren => "')'",
@@ -1912,6 +2120,148 @@ pub const Parser = struct {
         return hasParen;
     }
 };
+
+test "Length.parse and parseStyle" {
+    {
+        // em
+        const got = Length.parse("1.2em");
+        try testing.expectEqual(null, got.parser.err);
+        try testing.expectEqual(1.2, got.number.value);
+        try testing.expectEqual(.em, got.unit);
+        try testing.expectEqual(5, got.parser.pos);
+    }
+
+    {
+        // em (style)
+        const got = Length.parseStyle("1.2eM");
+        try testing.expectEqual(null, got.parser.err);
+        try testing.expectEqual(1.2, got.number.value);
+        try testing.expectEqual(.em, got.unit);
+        try testing.expectEqual(5, got.parser.pos);
+    }
+
+    {
+        // px
+        const got = Length.parse("1.2px");
+        try testing.expectEqual(null, got.parser.err);
+        try testing.expectEqual(1.2, got.number.value);
+        try testing.expectEqual(.px, got.unit);
+        try testing.expectEqual(5, got.parser.pos);
+    }
+
+    {
+        // percent
+        const got = Length.parse("1.2%");
+        try testing.expectEqual(null, got.parser.err);
+        try testing.expectEqual(1.2, got.number.value);
+        try testing.expectEqual(.percent, got.unit);
+        try testing.expectEqual(4, got.parser.pos);
+    }
+
+    {
+        // user units (px)
+        const got = Length.parse("1.2");
+        try testing.expectEqual(null, got.parser.err);
+        try testing.expectEqual(1.2, got.number.value);
+        try testing.expectEqual(.px, got.unit);
+        try testing.expectEqual(3, got.parser.pos);
+    }
+
+    {
+        // Invalid (number expected)
+        var got = Length.parse("bad");
+        try testing.expectEqual(.number, got.parser.err.?.expected);
+        try testing.expectEqual(0, got.parser.err.?.pos.start);
+        try testing.expectEqual(0, got.parser.err.?.pos.end);
+        try testing.expectEqual(0, got.parser.pos);
+        try testError(&got.parser, "at pos 1: expected number, found 'b'\n");
+    }
+
+    {
+        // Invalid (invalid unit)
+        var got = Length.parse("1bad");
+        try testing.expectEqual(.presentation_length_unit, got.parser.err.?.expected);
+        try testing.expectEqual(1, got.parser.err.?.pos.start);
+        try testing.expectEqual(3, got.parser.err.?.pos.end);
+        try testing.expectEqual(1, got.parser.pos);
+        try testError(&got.parser, "at pos 2: expected case-sensitive length unit or '%', found 'bad'\n");
+    }
+
+    {
+        // Invalid ('%' not allowed when parsing style units)
+        var got = Length.parseStyle("1%");
+        try testing.expectEqual(.style_length_unit, got.parser.err.?.expected);
+        try testing.expectEqual(1, got.parser.err.?.pos.start);
+        try testing.expectEqual(1, got.parser.err.?.pos.end);
+        try testing.expectEqual(1, got.parser.pos);
+        try testError(&got.parser, "at pos 2: expected case-insensitive length unit, found '%'\n");
+    }
+}
+
+test "Length.toPixels" {
+    {
+        // em
+        const got = Length.parse("1.2em");
+        try testing.expectEqual(null, got.parser.err);
+        try testing.expectEqual(12, got.toPixels(10));
+    }
+
+    {
+        // ex
+        const got = Length.parse("1.2ex");
+        try testing.expectEqual(null, got.parser.err);
+        try testing.expectEqual(12, got.toPixels(10));
+    }
+
+    {
+        // px
+        const got = Length.parse("999px");
+        try testing.expectEqual(null, got.parser.err);
+        try testing.expectEqual(999, got.toPixels(10));
+    }
+
+    {
+        // in
+        const got = Length.parse("2in");
+        try testing.expectEqual(null, got.parser.err);
+        try testing.expectEqual(192, got.toPixels(10));
+    }
+
+    {
+        // cm
+        const got = Length.parse("100cm");
+        try testing.expectEqual(null, got.parser.err);
+        try testing.expectEqual(3779.52755905511811023616, got.toPixels(10));
+    }
+
+    {
+        // mm
+        const got = Length.parse("254mm");
+        try testing.expectEqual(null, got.parser.err);
+        try testing.expectEqual(960, got.toPixels(10));
+    }
+
+    {
+        // pt
+        const got = Length.parse("72pt");
+        try testing.expectEqual(null, got.parser.err);
+        try testing.expectEqual(96, got.toPixels(10));
+    }
+
+    {
+        // pt
+        const got = Length.parse("6pc");
+        try testing.expectEqual(null, got.parser.err);
+        try testing.expectEqual(96, got.toPixels(10));
+    }
+
+    {
+        // percent
+        const got = Length.parse("10%");
+        try testing.expectEqual(null, got.parser.err);
+        try testing.expectEqual(10, got.toPixels(100));
+    }
+}
 
 test "Color.parse" {
     {
