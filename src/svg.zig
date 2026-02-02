@@ -95,12 +95,12 @@ pub const Path = struct {
     }
 
     fn _parse(self: *Path, parser: *Parser) !void {
-        var result = std.ArrayList(Node).init(self.arena.allocator());
-        errdefer result.deinit();
+        var result: std.ArrayList(Node) = .empty;
+        errdefer result.deinit(self.arena.allocator());
 
         parser.consumeWhitespace();
         if (try MoveTo.parse(self.arena.allocator(), parser)) |n|
-            try result.append(.{ .move_to = n })
+            try result.append(self.arena.allocator(), .{ .move_to = n })
         else
             return;
 
@@ -110,61 +110,61 @@ pub const Path = struct {
             switch (parser.data[parser.pos]) {
                 'M', 'm' => {
                     if (try MoveTo.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .move_to = n })
+                        try result.append(self.arena.allocator(), .{ .move_to = n })
                     else
                         break;
                 },
                 'Z', 'z' => {
                     if (try ClosePath.parse(parser)) |n|
-                        try result.append(.{ .close_path = n })
+                        try result.append(self.arena.allocator(), .{ .close_path = n })
                     else
                         break;
                 },
                 'L', 'l' => {
                     if (try LineTo.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .line_to = n })
+                        try result.append(self.arena.allocator(), .{ .line_to = n })
                     else
                         break;
                 },
                 'H', 'h' => {
                     if (try HorizontalLineTo.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .horizontal_line_to = n })
+                        try result.append(self.arena.allocator(), .{ .horizontal_line_to = n })
                     else
                         break;
                 },
                 'V', 'v' => {
                     if (try VerticalLineTo.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .vertical_line_to = n })
+                        try result.append(self.arena.allocator(), .{ .vertical_line_to = n })
                     else
                         break;
                 },
                 'C', 'c' => {
                     if (try CurveTo.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .curve_to = n })
+                        try result.append(self.arena.allocator(), .{ .curve_to = n })
                     else
                         break;
                 },
                 'S', 's' => {
                     if (try SmoothCurveTo.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .smooth_curve_to = n })
+                        try result.append(self.arena.allocator(), .{ .smooth_curve_to = n })
                     else
                         break;
                 },
                 'Q', 'q' => {
                     if (try QuadraticBezierCurveTo.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .quadratic_bezier_curve_to = n })
+                        try result.append(self.arena.allocator(), .{ .quadratic_bezier_curve_to = n })
                     else
                         break;
                 },
                 'T', 't' => {
                     if (try SmoothQuadraticBezierCurveTo.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .smooth_quadratic_bezier_curve_to = n })
+                        try result.append(self.arena.allocator(), .{ .smooth_quadratic_bezier_curve_to = n })
                     else
                         break;
                 },
                 'A', 'a' => {
                     if (try EllipticalArc.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .elliptical_arc = n })
+                        try result.append(self.arena.allocator(), .{ .elliptical_arc = n })
                     else
                         break;
                 },
@@ -221,15 +221,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(CoordinatePair).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(CoordinatePair) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'M' => relative = false,
                 'm' => relative = true,
                 else => {
                     parser.setErr(.M_or_m, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -241,20 +241,20 @@ pub const Path = struct {
 
             start = parser.pos;
             if (CoordinatePair.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 debug.assert(parser.err != null);
                 // Error has already been set, but we need to reset our position
                 parser.pos = reset;
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (CoordinatePair.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -313,15 +313,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(CoordinatePair).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(CoordinatePair) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'L' => relative = false,
                 'l' => relative = true,
                 else => {
                     parser.setErr(.L_or_l, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -333,20 +333,20 @@ pub const Path = struct {
 
             start = parser.pos;
             if (CoordinatePair.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 debug.assert(parser.err != null);
                 // Error has already been set, but we need to reset our position
                 parser.pos = reset;
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (CoordinatePair.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -379,15 +379,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(Number).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(Number) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'H' => relative = false,
                 'h' => relative = true,
                 else => {
                     parser.setErr(.H_or_h, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -399,18 +399,18 @@ pub const Path = struct {
 
             start = parser.pos;
             if (Number.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 parser.setErr(.number, start, parser.pos, reset);
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (Number.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -443,15 +443,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(Number).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(Number) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'V' => relative = false,
                 'v' => relative = true,
                 else => {
                     parser.setErr(.V_or_v, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -463,18 +463,18 @@ pub const Path = struct {
 
             start = parser.pos;
             if (Number.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 parser.setErr(.number, start, parser.pos, reset);
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (Number.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -507,15 +507,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(CurveToArgument).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(CurveToArgument) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'C' => relative = false,
                 'c' => relative = true,
                 else => {
                     parser.setErr(.C_or_c, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -527,20 +527,20 @@ pub const Path = struct {
 
             start = parser.pos;
             if (CurveToArgument.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 debug.assert(parser.err != null);
                 // Error has already been set, but we need to reset our position
                 parser.pos = reset;
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (CurveToArgument.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -623,15 +623,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(SmoothCurveToArgument).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(SmoothCurveToArgument) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'S' => relative = false,
                 's' => relative = true,
                 else => {
                     parser.setErr(.S_or_s, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -643,20 +643,20 @@ pub const Path = struct {
 
             start = parser.pos;
             if (SmoothCurveToArgument.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 debug.assert(parser.err != null);
                 // Error has already been set, but we need to reset our position
                 parser.pos = reset;
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (SmoothCurveToArgument.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -726,15 +726,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(QuadraticBezierCurveToArgument).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(QuadraticBezierCurveToArgument) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'Q' => relative = false,
                 'q' => relative = true,
                 else => {
                     parser.setErr(.Q_or_q, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -746,20 +746,20 @@ pub const Path = struct {
 
             start = parser.pos;
             if (QuadraticBezierCurveToArgument.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 debug.assert(parser.err != null);
                 // Error has already been set, but we need to reset our position
                 parser.pos = reset;
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (QuadraticBezierCurveToArgument.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -829,15 +829,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(CoordinatePair).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(CoordinatePair) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'T' => relative = false,
                 't' => relative = true,
                 else => {
                     parser.setErr(.T_or_t, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -849,20 +849,20 @@ pub const Path = struct {
 
             start = parser.pos;
             if (CoordinatePair.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 debug.assert(parser.err != null);
                 // Error has already been set, but we need to reset our position
                 parser.pos = reset;
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (CoordinatePair.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -895,15 +895,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(EllipticalArcArgument).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(EllipticalArcArgument) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'A' => relative = false,
                 'a' => relative = true,
                 else => {
                     parser.setErr(.A_or_a, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -915,20 +915,20 @@ pub const Path = struct {
 
             start = parser.pos;
             if (EllipticalArcArgument.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 debug.assert(parser.err != null);
                 // Error has already been set, but we need to reset our position
                 parser.pos = reset;
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (EllipticalArcArgument.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -2648,7 +2648,7 @@ test "Path.parse" {
             \\h 1
             \\V 1
             \\v 1
-            \\C 1,1 1,1 1,1
+            \\C 1,1  1,1 1,1
             \\c 1,1 1,1 1,1
             \\S 1,1 1,1
             \\s 1,1 1,1
@@ -2656,8 +2656,8 @@ test "Path.parse" {
             \\q 1,1 1,1
             \\T 1,1
             \\t 1,1
-            \\A 1,1 11 0,1 1,1 
-            \\a 1,1 11 0,1 1,1 
+            \\A 1,1 11 0,1 1,1
+            \\a 1,1 11 0,1 1,1
             ,
         );
         defer got.path.deinit();
