@@ -3,6 +3,7 @@
 .{
     .name = .zigsvg,
     .version = "0.1.0",
+    .fingerprint = 0xd5aca900c030faaf,
     .minimum_zig_version = "0.15.1",
     .paths = .{
         "build.zig",
