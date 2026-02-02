@@ -5,6 +5,7 @@ const std = @import("std");
 fn docsStep(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
 ) *std.Build.Step {
     const dir = b.addInstallDirectory(.{
         .source_dir = b.addObject(.{
@@ -12,7 +13,7 @@ fn docsStep(
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/svg.zig"),
                 .target = target,
-                .optimize = .Debug,
+                .optimize = optimize,
             }),
         }).getEmittedDocs(),
         .install_dir = .prefix,
@@ -51,6 +52,7 @@ fn docsServeStep(b: *std.Build, docs_step: *std.Build.Step) *std.Build.Step {
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
     _ = b.addModule("svg", .{
         .root_source_file = b.path("src/svg.zig"),
     });
@@ -58,11 +60,11 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/svg.zig"),
             .target = target,
-            .optimize = .Debug,
+            .optimize = optimize,
         }),
     }));
     b.step("test", "Run unit tests").dependOn(&tests.step);
-    const docs_step = docsStep(b, target);
+    const docs_step = docsStep(b, target, optimize);
     b.step("docs", "Generate documentation").dependOn(docs_step);
     b.step("docs-serve", "Serve documentation").dependOn(docsServeStep(b, docs_step));
 }
