@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
-//   Copyright © 2024 Chris Marchesi
+//   Copyright © 2024-2026 Chris Marchesi
 .{
-    .name = "zig-svg",
-    .version = "0.1.0",
+    .name = .zig_svg,
+    .fingerprint = 0xbef746a2da1fb7e7,
+    .version = "0.2.0",
     .paths = .{
         "build.zig",
         "build.zig.zon",

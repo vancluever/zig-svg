@@ -18,7 +18,7 @@ the parsing. An example for path is below:
 ```zig
 const Path = @import("svg").Path;
 var path = try Path.parse(alloc, data);
-defer path.deinit();
+defer path.deinit(alloc);
 for (path.nodes) |n| {
   ...
 }
@@ -32,15 +32,15 @@ partial SVG processing as per the
 [spec](https://www.w3.org/TR/SVG11/implnote.html#ErrorProcessing).
 
 ```zig
-const io = @import("std").io;
-const log = @import("std").log;
 const Path = @import("svg").Path;
 var path = try Path.parse(alloc, data);
-defer path.deinit();
+defer path.deinit(alloc);
 if (path.err) |err| {
-    const errWriter = io.getStdErr();
-    buf.format(errWriter, "error processing SVG: ");
-    try path.fmtErr(errWriter);
+    var buf: [1028]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buf);
+    try writer.print("error processing SVG: ", .{});
+    try path.parser.fmtErr(errWriter);
+    try writer.flush();
 }
 
 for (path.nodes) |n| {
