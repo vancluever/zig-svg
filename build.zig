@@ -53,15 +53,13 @@ fn docsServeStep(b: *std.Build, docs_step: *std.Build.Step) *std.Build.Step {
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    _ = b.addModule("svg", .{
+    const svg = b.addModule("svg", .{
         .root_source_file = b.path("src/svg.zig"),
+        .target = target,
+        .optimize = optimize,
     });
     const tests = b.addRunArtifact(b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/svg.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = svg,
     }));
     b.step("test", "Run unit tests").dependOn(&tests.step);
     const docs_step = docsStep(b, target, optimize);
