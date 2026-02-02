@@ -9,9 +9,11 @@ fn docsStep(
     const dir = b.addInstallDirectory(.{
         .source_dir = b.addObject(.{
             .name = "svg",
-            .root_source_file = b.path("src/svg.zig"),
-            .target = target,
-            .optimize = .Debug,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/svg.zig"),
+                .target = target,
+                .optimize = .Debug,
+            }),
         }).getEmittedDocs(),
         .install_dir = .prefix,
         .install_subdir = "docs",
@@ -40,7 +42,9 @@ fn docsServeStep(b: *std.Build, docs_step: *std.Build.Step) *std.Build.Step {
     const server = b.addSystemCommand(&.{ "python3", "-m", "http.server" });
     // No idea how to access the build prefix otherwise right now, so we have
     // to set this manually
-    server.setCwd(.{ .path = b.pathJoin(&.{ b.install_prefix, "docs" }) });
+    server.setCwd(std.Build.LazyPath{
+        .cwd_relative = b.pathJoin(&.{ b.install_prefix, "docs" }),
+    });
     server.step.dependOn(docs_step);
     return &server.step;
 }
@@ -51,9 +55,11 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/svg.zig"),
     });
     const tests = b.addRunArtifact(b.addTest(.{
-        .root_source_file = .{ .path = "src/svg.zig" },
-        .target = target,
-        .optimize = .Debug,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/svg.zig"),
+            .target = target,
+            .optimize = .Debug,
+        }),
     }));
     b.step("test", "Run unit tests").dependOn(&tests.step);
     const docs_step = docsStep(b, target);
