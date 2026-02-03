@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-//   Copyright © 2024 Chris Marchesi
+//   Copyright © 2024-2026 Chris Marchesi
 
 //! The SVG package contains parsers for various SVG attribute representations.
 //! It does not include XML parsing; for that, use a separate XML parser.
@@ -12,7 +12,7 @@
 //! ```
 //! const Path = @import("svg").Path;
 //! var path = try Path.parse(alloc, data);
-//! defer path.deinit();
+//! defer path.deinit(alloc);
 //! for (path.nodes) |n| {
 //!   ...
 //! }
@@ -26,15 +26,15 @@
 //! partial SVG processing as per the spec.
 //!
 //! ```
-//! const io = @import("std").io;
-//! const log = @import("std").log;
 //! const Path = @import("svg").Path;
 //! var path = try Path.parse(alloc, data);
-//! defer path.deinit();
+//! defer path.deinit(alloc);
 //! if (path.err) |err| {
-//!     const errWriter = io.getStdErr();
-//!     buf.format(errWriter, "error processing SVG: ");
+//!     var buf: [1028]u8 = undefined;
+//!     var writer = std.fs.File.stderr().writer(&buf);
+//!     try writer.print("error processing SVG: ", .{});
 //!     try path.parser.fmtErr(errWriter);
+//!     try writer.flush();
 //! }
 //!
 //! for (path.nodes) |n| {
@@ -46,7 +46,7 @@ const std = @import("std");
 const debug = @import("std").debug;
 const fmt = @import("std").fmt;
 const heap = @import("std").heap;
-const io = @import("std").io;
+const Writer = @import("std").Io.Writer;
 const log = @import("std").log;
 const math = @import("std").math;
 const mem = @import("std").mem;
@@ -57,12 +57,9 @@ const testing = @import("std").testing;
 /// See the root package description for an example for its usage.
 pub const Path = struct {
     /// The nodes that belong to this path. Populated by `parse`.
-    nodes: []Node = &[_]Node{},
+    nodes: []Node,
 
-    // All parsed items are stored in the arena, e.g., any `ArrayList`s that we use
-    // to build multi-arg nodes use this arena as a backing store. `deinit` clears
-    // the arena.
-    arena: heap.ArenaAllocator,
+    const empty: Path = .{ .nodes = &.{} };
 
     // The result of a path parse operation. The parser is exposed for error
     // detection.
@@ -74,9 +71,9 @@ pub const Path = struct {
     /// Returns a parsed path node set. Call `deinit` to de-allocate path data.
     pub fn parse(alloc: mem.Allocator, data: []const u8) !ParseResult {
         var parser: Parser = .{ .data = data };
-        var path = init(alloc);
-        errdefer path.deinit();
-        try path._parse(&parser);
+        var path: Path = .empty;
+        errdefer path.deinit(alloc);
+        try path._parse(alloc, &parser);
         return .{
             .parser = parser,
             .path = path,
@@ -84,23 +81,27 @@ pub const Path = struct {
     }
 
     /// Releases stored node data. The node set is invalid to use after this.
-    pub fn deinit(self: *Path) void {
-        self.arena.deinit();
+    pub fn deinit(self: *Path, alloc: mem.Allocator) void {
+        for (self.nodes) |*node| {
+            switch (node.*) {
+                // Note: we put an implementation on every node even if the
+                // node type does not have dynamic fields, this just ensures
+                // that we don't accidentally leak memory.
+                inline else => |*n| n.deinit(alloc),
+            }
+        }
+
+        alloc.free(self.nodes);
+        self.* = undefined;
     }
 
-    fn init(alloc: mem.Allocator) Path {
-        return .{
-            .arena = heap.ArenaAllocator.init(alloc),
-        };
-    }
-
-    fn _parse(self: *Path, parser: *Parser) !void {
-        var result = std.ArrayList(Node).init(self.arena.allocator());
-        errdefer result.deinit();
+    fn _parse(self: *Path, alloc: mem.Allocator, parser: *Parser) !void {
+        var result: std.ArrayList(Node) = .empty;
+        errdefer result.deinit(alloc);
 
         parser.consumeWhitespace();
-        if (try MoveTo.parse(self.arena.allocator(), parser)) |n|
-            try result.append(.{ .move_to = n })
+        if (try MoveTo.parse(alloc, parser)) |n|
+            try result.append(alloc, .{ .move_to = n })
         else
             return;
 
@@ -109,62 +110,62 @@ pub const Path = struct {
         while (parser.pos < parser.data.len) {
             switch (parser.data[parser.pos]) {
                 'M', 'm' => {
-                    if (try MoveTo.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .move_to = n })
+                    if (try MoveTo.parse(alloc, parser)) |n|
+                        try result.append(alloc, .{ .move_to = n })
                     else
                         break;
                 },
                 'Z', 'z' => {
                     if (try ClosePath.parse(parser)) |n|
-                        try result.append(.{ .close_path = n })
+                        try result.append(alloc, .{ .close_path = n })
                     else
                         break;
                 },
                 'L', 'l' => {
-                    if (try LineTo.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .line_to = n })
+                    if (try LineTo.parse(alloc, parser)) |n|
+                        try result.append(alloc, .{ .line_to = n })
                     else
                         break;
                 },
                 'H', 'h' => {
-                    if (try HorizontalLineTo.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .horizontal_line_to = n })
+                    if (try HorizontalLineTo.parse(alloc, parser)) |n|
+                        try result.append(alloc, .{ .horizontal_line_to = n })
                     else
                         break;
                 },
                 'V', 'v' => {
-                    if (try VerticalLineTo.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .vertical_line_to = n })
+                    if (try VerticalLineTo.parse(alloc, parser)) |n|
+                        try result.append(alloc, .{ .vertical_line_to = n })
                     else
                         break;
                 },
                 'C', 'c' => {
-                    if (try CurveTo.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .curve_to = n })
+                    if (try CurveTo.parse(alloc, parser)) |n|
+                        try result.append(alloc, .{ .curve_to = n })
                     else
                         break;
                 },
                 'S', 's' => {
-                    if (try SmoothCurveTo.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .smooth_curve_to = n })
+                    if (try SmoothCurveTo.parse(alloc, parser)) |n|
+                        try result.append(alloc, .{ .smooth_curve_to = n })
                     else
                         break;
                 },
                 'Q', 'q' => {
-                    if (try QuadraticBezierCurveTo.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .quadratic_bezier_curve_to = n })
+                    if (try QuadraticBezierCurveTo.parse(alloc, parser)) |n|
+                        try result.append(alloc, .{ .quadratic_bezier_curve_to = n })
                     else
                         break;
                 },
                 'T', 't' => {
-                    if (try SmoothQuadraticBezierCurveTo.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .smooth_quadratic_bezier_curve_to = n })
+                    if (try SmoothQuadraticBezierCurveTo.parse(alloc, parser)) |n|
+                        try result.append(alloc, .{ .smooth_quadratic_bezier_curve_to = n })
                     else
                         break;
                 },
                 'A', 'a' => {
-                    if (try EllipticalArc.parse(self.arena.allocator(), parser)) |n|
-                        try result.append(.{ .elliptical_arc = n })
+                    if (try EllipticalArc.parse(alloc, parser)) |n|
+                        try result.append(alloc, .{ .elliptical_arc = n })
                     else
                         break;
                 },
@@ -176,7 +177,7 @@ pub const Path = struct {
             parser.consumeWhitespace();
         }
 
-        self.nodes = result.items;
+        self.nodes = try result.toOwnedSlice(alloc);
     }
 
     pub const NodeType = enum {
@@ -221,15 +222,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(CoordinatePair).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(CoordinatePair) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'M' => relative = false,
                 'm' => relative = true,
                 else => {
                     parser.setErr(.M_or_m, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -241,20 +242,20 @@ pub const Path = struct {
 
             start = parser.pos;
             if (CoordinatePair.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 debug.assert(parser.err != null);
                 // Error has already been set, but we need to reset our position
                 parser.pos = reset;
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (CoordinatePair.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -266,9 +267,15 @@ pub const Path = struct {
             parser.err = null;
             return .{
                 .relative = relative,
-                .args = args.items,
+                .args = try args.toOwnedSlice(alloc),
                 .pos = pos,
             };
+        }
+
+        /// Releases memory allocated for arguments and invalidates memory.
+        fn deinit(self: *MoveTo, alloc: mem.Allocator) void {
+            alloc.free(self.args);
+            self.* = undefined;
         }
     };
 
@@ -296,6 +303,13 @@ pub const Path = struct {
                 .pos = pos,
             };
         }
+
+        /// Invalidates memory only, as `ClosePath` nodes do not have any
+        /// dynamic items.
+        fn deinit(self: *ClosePath, alloc: mem.Allocator) void {
+            _ = alloc;
+            self.* = undefined;
+        }
     };
 
     /// Represents a lineto command ('L' or 'l').
@@ -313,15 +327,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(CoordinatePair).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(CoordinatePair) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'L' => relative = false,
                 'l' => relative = true,
                 else => {
                     parser.setErr(.L_or_l, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -333,20 +347,20 @@ pub const Path = struct {
 
             start = parser.pos;
             if (CoordinatePair.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 debug.assert(parser.err != null);
                 // Error has already been set, but we need to reset our position
                 parser.pos = reset;
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (CoordinatePair.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -358,9 +372,15 @@ pub const Path = struct {
             parser.err = null;
             return .{
                 .relative = relative,
-                .args = args.items,
+                .args = try args.toOwnedSlice(alloc),
                 .pos = pos,
             };
+        }
+
+        /// Releases memory allocated for arguments and invalidates memory.
+        fn deinit(self: *LineTo, alloc: mem.Allocator) void {
+            alloc.free(self.args);
+            self.* = undefined;
         }
     };
 
@@ -379,15 +399,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(Number).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(Number) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'H' => relative = false,
                 'h' => relative = true,
                 else => {
                     parser.setErr(.H_or_h, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -399,18 +419,18 @@ pub const Path = struct {
 
             start = parser.pos;
             if (Number.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 parser.setErr(.number, start, parser.pos, reset);
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (Number.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -422,9 +442,15 @@ pub const Path = struct {
             parser.err = null;
             return .{
                 .relative = relative,
-                .args = args.items,
+                .args = try args.toOwnedSlice(alloc),
                 .pos = pos,
             };
+        }
+
+        /// Releases memory allocated for arguments and invalidates memory.
+        fn deinit(self: *HorizontalLineTo, alloc: mem.Allocator) void {
+            alloc.free(self.args);
+            self.* = undefined;
         }
     };
 
@@ -443,15 +469,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(Number).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(Number) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'V' => relative = false,
                 'v' => relative = true,
                 else => {
                     parser.setErr(.V_or_v, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -463,18 +489,18 @@ pub const Path = struct {
 
             start = parser.pos;
             if (Number.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 parser.setErr(.number, start, parser.pos, reset);
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (Number.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -486,9 +512,15 @@ pub const Path = struct {
             parser.err = null;
             return .{
                 .relative = relative,
-                .args = args.items,
+                .args = try args.toOwnedSlice(alloc),
                 .pos = pos,
             };
+        }
+
+        /// Releases memory allocated for arguments and invalidates memory.
+        fn deinit(self: *VerticalLineTo, alloc: mem.Allocator) void {
+            alloc.free(self.args);
+            self.* = undefined;
         }
     };
 
@@ -507,15 +539,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(CurveToArgument).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(CurveToArgument) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'C' => relative = false,
                 'c' => relative = true,
                 else => {
                     parser.setErr(.C_or_c, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -527,20 +559,20 @@ pub const Path = struct {
 
             start = parser.pos;
             if (CurveToArgument.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 debug.assert(parser.err != null);
                 // Error has already been set, but we need to reset our position
                 parser.pos = reset;
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (CurveToArgument.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -552,9 +584,15 @@ pub const Path = struct {
             parser.err = null;
             return .{
                 .relative = relative,
-                .args = args.items,
+                .args = try args.toOwnedSlice(alloc),
                 .pos = pos,
             };
+        }
+
+        /// Releases memory allocated for arguments and invalidates memory.
+        fn deinit(self: *CurveTo, alloc: mem.Allocator) void {
+            alloc.free(self.args);
+            self.* = undefined;
         }
     };
 
@@ -623,15 +661,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(SmoothCurveToArgument).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(SmoothCurveToArgument) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'S' => relative = false,
                 's' => relative = true,
                 else => {
                     parser.setErr(.S_or_s, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -643,20 +681,20 @@ pub const Path = struct {
 
             start = parser.pos;
             if (SmoothCurveToArgument.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 debug.assert(parser.err != null);
                 // Error has already been set, but we need to reset our position
                 parser.pos = reset;
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (SmoothCurveToArgument.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -668,9 +706,15 @@ pub const Path = struct {
             parser.err = null;
             return .{
                 .relative = relative,
-                .args = args.items,
+                .args = try args.toOwnedSlice(alloc),
                 .pos = pos,
             };
+        }
+
+        /// Releases memory allocated for arguments and invalidates memory.
+        fn deinit(self: *SmoothCurveTo, alloc: mem.Allocator) void {
+            alloc.free(self.args);
+            self.* = undefined;
         }
     };
 
@@ -726,15 +770,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(QuadraticBezierCurveToArgument).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(QuadraticBezierCurveToArgument) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'Q' => relative = false,
                 'q' => relative = true,
                 else => {
                     parser.setErr(.Q_or_q, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -746,20 +790,20 @@ pub const Path = struct {
 
             start = parser.pos;
             if (QuadraticBezierCurveToArgument.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 debug.assert(parser.err != null);
                 // Error has already been set, but we need to reset our position
                 parser.pos = reset;
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (QuadraticBezierCurveToArgument.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -771,9 +815,15 @@ pub const Path = struct {
             parser.err = null;
             return .{
                 .relative = relative,
-                .args = args.items,
+                .args = try args.toOwnedSlice(alloc),
                 .pos = pos,
             };
+        }
+
+        /// Releases memory allocated for arguments and invalidates memory.
+        fn deinit(self: *QuadraticBezierCurveTo, alloc: mem.Allocator) void {
+            alloc.free(self.args);
+            self.* = undefined;
         }
     };
 
@@ -829,15 +879,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(CoordinatePair).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(CoordinatePair) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'T' => relative = false,
                 't' => relative = true,
                 else => {
                     parser.setErr(.T_or_t, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -849,20 +899,20 @@ pub const Path = struct {
 
             start = parser.pos;
             if (CoordinatePair.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 debug.assert(parser.err != null);
                 // Error has already been set, but we need to reset our position
                 parser.pos = reset;
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (CoordinatePair.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -874,9 +924,15 @@ pub const Path = struct {
             parser.err = null;
             return .{
                 .relative = relative,
-                .args = args.items,
+                .args = try args.toOwnedSlice(alloc),
                 .pos = pos,
             };
+        }
+
+        /// Releases memory allocated for arguments and invalidates memory.
+        fn deinit(self: *SmoothQuadraticBezierCurveTo, alloc: mem.Allocator) void {
+            alloc.free(self.args);
+            self.* = undefined;
         }
     };
 
@@ -895,15 +951,15 @@ pub const Path = struct {
             var start = parser.pos;
             var relative: bool = undefined;
             var pos: Parser.Pos = undefined;
-            var args = std.ArrayList(EllipticalArcArgument).init(alloc);
-            errdefer args.deinit();
+            var args: std.ArrayList(EllipticalArcArgument) = .empty;
+            errdefer args.deinit(alloc);
 
             switch (parser.data[parser.pos]) {
                 'A' => relative = false,
                 'a' => relative = true,
                 else => {
                     parser.setErr(.A_or_a, start, parser.pos, reset);
-                    args.deinit();
+                    args.deinit(alloc);
                     return null;
                 },
             }
@@ -915,20 +971,20 @@ pub const Path = struct {
 
             start = parser.pos;
             if (EllipticalArcArgument.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
             } else {
                 debug.assert(parser.err != null);
                 // Error has already been set, but we need to reset our position
                 parser.pos = reset;
-                args.deinit();
+                args.deinit(alloc);
                 return null;
             }
 
             start = parser.pos;
             _ = parser.consumeCommaWhitespace();
             while (EllipticalArcArgument.parse(parser)) |a| {
-                try args.append(a);
+                try args.append(alloc, a);
                 pos.end = a.pos.end;
                 start = parser.pos;
                 _ = parser.consumeCommaWhitespace();
@@ -940,9 +996,15 @@ pub const Path = struct {
             parser.err = null;
             return .{
                 .relative = relative,
-                .args = args.items,
+                .args = try args.toOwnedSlice(alloc),
                 .pos = pos,
             };
+        }
+
+        /// Releases memory allocated for arguments and invalidates memory.
+        fn deinit(self: *EllipticalArc, alloc: mem.Allocator) void {
+            alloc.free(self.args);
+            self.* = undefined;
         }
     };
 
@@ -2070,10 +2132,9 @@ pub const Parser = struct {
     };
 
     /// Prints the error to the supplied writer.
-    pub fn fmtErr(self: *Parser, writer: anytype) !void {
+    pub fn fmtErr(self: *Parser, writer: *Writer) !void {
         if (self.err) |e| {
-            try fmt.format(
-                writer,
+            try writer.print(
                 "at pos {d}: expected {s}, found ",
                 .{
                     if (e.pos.start < self.data.len) e.pos.start + 1 else self.data.len,
@@ -2081,9 +2142,9 @@ pub const Parser = struct {
                 },
             );
             if (e.pos.start < self.data.len) {
-                try fmt.format(writer, "'{s}'\n", .{self.data[e.pos.start .. e.pos.end + 1]});
+                try writer.print("'{s}'\n", .{self.data[e.pos.start .. e.pos.end + 1]});
             } else {
-                try fmt.format(writer, "end of data\n", .{});
+                try writer.print("end of data\n", .{});
             }
         }
     }
@@ -2607,7 +2668,7 @@ test "Path.parse" {
             testing.allocator,
             "M 100 101 L 300 100 L 200 300 z",
         );
-        defer got.path.deinit();
+        defer got.path.deinit(testing.allocator);
 
         try testing.expectEqual(null, got.parser.err);
         try testing.expectEqual(4, got.path.nodes.len);
@@ -2660,7 +2721,7 @@ test "Path.parse" {
             \\a 1,1 11 0,1 1,1 
             ,
         );
-        defer got.path.deinit();
+        defer got.path.deinit(testing.allocator);
 
         try testing.expectEqual(null, got.parser.err);
         try testing.expectEqual(20, got.path.nodes.len);
@@ -2692,7 +2753,7 @@ test "Path.parse" {
             testing.allocator,
             "M 100 101 L 300 100 Lx",
         );
-        defer got.path.deinit();
+        defer got.path.deinit(testing.allocator);
 
         try testing.expectEqual(2, got.path.nodes.len);
         try testing.expect(got.path.nodes[0] == .move_to);
@@ -2710,7 +2771,7 @@ test "Path.parse" {
             testing.allocator,
             "M 100 101 L 300 100 x",
         );
-        defer got.path.deinit();
+        defer got.path.deinit(testing.allocator);
 
         try testing.expectEqual(2, got.path.nodes.len);
         try testing.expect(got.path.nodes[0] == .move_to);
@@ -2728,7 +2789,7 @@ test "Path.parse" {
             testing.allocator,
             "L 100 101 L 300 100 z",
         );
-        defer got.path.deinit();
+        defer got.path.deinit(testing.allocator);
 
         try testing.expectEqual(0, got.path.nodes.len);
         try testing.expectEqual(.M_or_m, got.parser.err.?.expected);
@@ -2743,59 +2804,53 @@ test "MoveTo" {
     {
         // Good, single, absolute
         var parser: Parser = .{ .data = "M 10,11 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.MoveTo.parse(arena.allocator(), &parser);
+        var got = try Path.MoveTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(6, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(6, got.?.pos.end);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(10, got.args[0].coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(6, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(6, got.pos.end);
         try testing.expectEqual(7, parser.pos);
     }
 
     {
         // Good, single, relative
         var parser: Parser = .{ .data = "m 10,11 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.MoveTo.parse(arena.allocator(), &parser);
+        var got = try Path.MoveTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(true, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(6, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(6, got.?.pos.end);
+        try testing.expectEqual(true, got.relative);
+        try testing.expectEqual(10, got.args[0].coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(6, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(6, got.pos.end);
         try testing.expectEqual(7, parser.pos);
     }
 
     {
         // Good, multiple
         var parser: Parser = .{ .data = "M 10,11 20,21 30,31 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.MoveTo.parse(arena.allocator(), &parser);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(6, got.?.args[0].pos.end);
-        try testing.expectEqual(20, got.?.args[1].coordinates[0].number.value);
-        try testing.expectEqual(21, got.?.args[1].coordinates[1].number.value);
-        try testing.expectEqual(8, got.?.args[1].pos.start);
-        try testing.expectEqual(12, got.?.args[1].pos.end);
-        try testing.expectEqual(30, got.?.args[2].coordinates[0].number.value);
-        try testing.expectEqual(31, got.?.args[2].coordinates[1].number.value);
-        try testing.expectEqual(14, got.?.args[2].pos.start);
-        try testing.expectEqual(18, got.?.args[2].pos.end);
+        var got = try Path.MoveTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(10, got.args[0].coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(6, got.args[0].pos.end);
+        try testing.expectEqual(20, got.args[1].coordinates[0].number.value);
+        try testing.expectEqual(21, got.args[1].coordinates[1].number.value);
+        try testing.expectEqual(8, got.args[1].pos.start);
+        try testing.expectEqual(12, got.args[1].pos.end);
+        try testing.expectEqual(30, got.args[2].coordinates[0].number.value);
+        try testing.expectEqual(31, got.args[2].coordinates[1].number.value);
+        try testing.expectEqual(14, got.args[2].pos.start);
+        try testing.expectEqual(18, got.args[2].pos.end);
         try testing.expectEqual(19, parser.pos);
     }
 
@@ -2805,10 +2860,7 @@ test "MoveTo" {
         // Note that we assert this on reading the production, but it should
         // never come up in real-world use.
         var parser: Parser = .{ .data = "x 10,11" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.MoveTo.parse(arena.allocator(), &parser));
+        try testing.expectEqual(null, Path.MoveTo.parse(testing.allocator, &parser));
         try testing.expectEqual(.M_or_m, parser.err.?.expected);
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
@@ -2819,10 +2871,7 @@ test "MoveTo" {
     {
         // Bad, incomplete arg
         var parser: Parser = .{ .data = "M 25," };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.MoveTo.parse(arena.allocator(), &parser));
+        try testing.expectEqual(null, Path.MoveTo.parse(testing.allocator, &parser));
         try testing.expectEqual(.coordinate_pair, parser.err.?.expected);
         try testing.expectEqual(2, parser.err.?.pos.start);
         try testing.expectEqual(4, parser.err.?.pos.end);
@@ -2868,59 +2917,53 @@ test "LineTo" {
     {
         // Good, single, absolute
         var parser: Parser = .{ .data = "L 10,11 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.LineTo.parse(arena.allocator(), &parser);
+        var got = try Path.LineTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(6, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(6, got.?.pos.end);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(10, got.args[0].coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(6, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(6, got.pos.end);
         try testing.expectEqual(7, parser.pos);
     }
 
     {
         // Good, single, relative
         var parser: Parser = .{ .data = "l 10,11 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.LineTo.parse(arena.allocator(), &parser);
+        var got = try Path.LineTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(true, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(6, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(6, got.?.pos.end);
+        try testing.expectEqual(true, got.relative);
+        try testing.expectEqual(10, got.args[0].coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(6, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(6, got.pos.end);
         try testing.expectEqual(7, parser.pos);
     }
 
     {
         // Good, multiple
         var parser: Parser = .{ .data = "L 10,11 20,21 30,31 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.LineTo.parse(arena.allocator(), &parser);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(6, got.?.args[0].pos.end);
-        try testing.expectEqual(20, got.?.args[1].coordinates[0].number.value);
-        try testing.expectEqual(21, got.?.args[1].coordinates[1].number.value);
-        try testing.expectEqual(8, got.?.args[1].pos.start);
-        try testing.expectEqual(12, got.?.args[1].pos.end);
-        try testing.expectEqual(30, got.?.args[2].coordinates[0].number.value);
-        try testing.expectEqual(31, got.?.args[2].coordinates[1].number.value);
-        try testing.expectEqual(14, got.?.args[2].pos.start);
-        try testing.expectEqual(18, got.?.args[2].pos.end);
+        var got = try Path.LineTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(10, got.args[0].coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(6, got.args[0].pos.end);
+        try testing.expectEqual(20, got.args[1].coordinates[0].number.value);
+        try testing.expectEqual(21, got.args[1].coordinates[1].number.value);
+        try testing.expectEqual(8, got.args[1].pos.start);
+        try testing.expectEqual(12, got.args[1].pos.end);
+        try testing.expectEqual(30, got.args[2].coordinates[0].number.value);
+        try testing.expectEqual(31, got.args[2].coordinates[1].number.value);
+        try testing.expectEqual(14, got.args[2].pos.start);
+        try testing.expectEqual(18, got.args[2].pos.end);
         try testing.expectEqual(19, parser.pos);
     }
 
@@ -2930,10 +2973,7 @@ test "LineTo" {
         // Note that we assert this on reading the production, but it should
         // never come up in real-world use.
         var parser: Parser = .{ .data = "x 10,11" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.LineTo.parse(arena.allocator(), &parser));
+        try testing.expectEqual(null, Path.LineTo.parse(testing.allocator, &parser));
         try testing.expectEqual(.L_or_l, parser.err.?.expected);
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
@@ -2944,10 +2984,7 @@ test "LineTo" {
     {
         // Bad, incomplete arg
         var parser: Parser = .{ .data = "L 25," };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.LineTo.parse(arena.allocator(), &parser));
+        try testing.expectEqual(null, Path.LineTo.parse(testing.allocator, &parser));
         try testing.expectEqual(.coordinate_pair, parser.err.?.expected);
         try testing.expectEqual(2, parser.err.?.pos.start);
         try testing.expectEqual(4, parser.err.?.pos.end);
@@ -2960,57 +2997,51 @@ test "HorizontalLineTo" {
     {
         // Good, single, absolute
         var parser: Parser = .{ .data = "H 10 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.HorizontalLineTo.parse(arena.allocator(), &parser);
+        var got = try Path.HorizontalLineTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(3, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(3, got.?.pos.end);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(10, got.args[0].value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(3, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(3, got.pos.end);
         try testing.expectEqual(4, parser.pos);
     }
 
     {
         // Good, single, relative
         var parser: Parser = .{ .data = "h 10 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.HorizontalLineTo.parse(arena.allocator(), &parser);
+        var got = try Path.HorizontalLineTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(true, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(3, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(3, got.?.pos.end);
+        try testing.expectEqual(true, got.relative);
+        try testing.expectEqual(10, got.args[0].value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(3, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(3, got.pos.end);
         try testing.expectEqual(4, parser.pos);
     }
 
     {
         // Good, multiple
         var parser: Parser = .{ .data = "H 10 11 12 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.HorizontalLineTo.parse(arena.allocator(), &parser);
+        var got = try Path.HorizontalLineTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(3, got.?.args[0].pos.end);
-        try testing.expectEqual(11, got.?.args[1].value);
-        try testing.expectEqual(5, got.?.args[1].pos.start);
-        try testing.expectEqual(6, got.?.args[1].pos.end);
-        try testing.expectEqual(12, got.?.args[2].value);
-        try testing.expectEqual(8, got.?.args[2].pos.start);
-        try testing.expectEqual(9, got.?.args[2].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(9, got.?.pos.end);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(10, got.args[0].value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(3, got.args[0].pos.end);
+        try testing.expectEqual(11, got.args[1].value);
+        try testing.expectEqual(5, got.args[1].pos.start);
+        try testing.expectEqual(6, got.args[1].pos.end);
+        try testing.expectEqual(12, got.args[2].value);
+        try testing.expectEqual(8, got.args[2].pos.start);
+        try testing.expectEqual(9, got.args[2].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(9, got.pos.end);
         try testing.expectEqual(10, parser.pos);
     }
 
@@ -3020,10 +3051,7 @@ test "HorizontalLineTo" {
         // Note that we assert this on reading the production, but it should
         // never come up in real-world use.
         var parser: Parser = .{ .data = "x 10" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.HorizontalLineTo.parse(arena.allocator(), &parser));
+        try testing.expectEqual(null, Path.HorizontalLineTo.parse(testing.allocator, &parser));
         try testing.expectEqual(.H_or_h, parser.err.?.expected);
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
@@ -3034,10 +3062,7 @@ test "HorizontalLineTo" {
     {
         // Bad, incomplete arg
         var parser: Parser = .{ .data = "H ," };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.HorizontalLineTo.parse(arena.allocator(), &parser));
+        try testing.expectEqual(null, Path.HorizontalLineTo.parse(testing.allocator, &parser));
         try testing.expectEqual(.number, parser.err.?.expected);
         try testing.expectEqual(2, parser.err.?.pos.start);
         try testing.expectEqual(2, parser.err.?.pos.end);
@@ -3050,57 +3075,51 @@ test "VerticalLineTo" {
     {
         // Good, single, absolute
         var parser: Parser = .{ .data = "V 10 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.VerticalLineTo.parse(arena.allocator(), &parser);
+        var got = try Path.VerticalLineTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(3, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(3, got.?.pos.end);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(10, got.args[0].value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(3, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(3, got.pos.end);
         try testing.expectEqual(4, parser.pos);
     }
 
     {
         // Good, single, relative
         var parser: Parser = .{ .data = "v 10 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.VerticalLineTo.parse(arena.allocator(), &parser);
+        var got = try Path.VerticalLineTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(true, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(3, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(3, got.?.pos.end);
+        try testing.expectEqual(true, got.relative);
+        try testing.expectEqual(10, got.args[0].value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(3, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(3, got.pos.end);
         try testing.expectEqual(4, parser.pos);
     }
 
     {
         // Good, multiple
         var parser: Parser = .{ .data = "V 10 11 12 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.VerticalLineTo.parse(arena.allocator(), &parser);
+        var got = try Path.VerticalLineTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(3, got.?.args[0].pos.end);
-        try testing.expectEqual(11, got.?.args[1].value);
-        try testing.expectEqual(5, got.?.args[1].pos.start);
-        try testing.expectEqual(6, got.?.args[1].pos.end);
-        try testing.expectEqual(12, got.?.args[2].value);
-        try testing.expectEqual(8, got.?.args[2].pos.start);
-        try testing.expectEqual(9, got.?.args[2].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(9, got.?.pos.end);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(10, got.args[0].value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(3, got.args[0].pos.end);
+        try testing.expectEqual(11, got.args[1].value);
+        try testing.expectEqual(5, got.args[1].pos.start);
+        try testing.expectEqual(6, got.args[1].pos.end);
+        try testing.expectEqual(12, got.args[2].value);
+        try testing.expectEqual(8, got.args[2].pos.start);
+        try testing.expectEqual(9, got.args[2].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(9, got.pos.end);
         try testing.expectEqual(10, parser.pos);
     }
 
@@ -3110,10 +3129,7 @@ test "VerticalLineTo" {
         // Note that we assert this on reading the production, but it should
         // never come up in real-world use.
         var parser: Parser = .{ .data = "x 10" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.VerticalLineTo.parse(arena.allocator(), &parser));
+        try testing.expectEqual(null, Path.VerticalLineTo.parse(testing.allocator, &parser));
         try testing.expectEqual(.V_or_v, parser.err.?.expected);
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
@@ -3124,10 +3140,7 @@ test "VerticalLineTo" {
     {
         // Bad, incomplete arg
         var parser: Parser = .{ .data = "V ," };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.VerticalLineTo.parse(arena.allocator(), &parser));
+        try testing.expectEqual(null, Path.VerticalLineTo.parse(testing.allocator, &parser));
         try testing.expectEqual(.number, parser.err.?.expected);
         try testing.expectEqual(2, parser.err.?.pos.start);
         try testing.expectEqual(2, parser.err.?.pos.end);
@@ -3140,44 +3153,40 @@ test "CurveTo" {
     {
         // Good, single, absolute
         var parser: Parser = .{ .data = "C 10,11 20,21 30,31" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.CurveTo.parse(arena.allocator(), &parser);
+        var got = try Path.CurveTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].p1.coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].p1.coordinates[1].number.value);
-        try testing.expectEqual(20, got.?.args[0].p2.coordinates[0].number.value);
-        try testing.expectEqual(21, got.?.args[0].p2.coordinates[1].number.value);
-        try testing.expectEqual(30, got.?.args[0].end.coordinates[0].number.value);
-        try testing.expectEqual(31, got.?.args[0].end.coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(18, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(18, got.?.pos.end);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(10, got.args[0].p1.coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].p1.coordinates[1].number.value);
+        try testing.expectEqual(20, got.args[0].p2.coordinates[0].number.value);
+        try testing.expectEqual(21, got.args[0].p2.coordinates[1].number.value);
+        try testing.expectEqual(30, got.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(31, got.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(18, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(18, got.pos.end);
         try testing.expectEqual(19, parser.pos);
     }
 
     {
         // Good, single, relative
         var parser: Parser = .{ .data = "c 10,11 20,21 30,31 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.CurveTo.parse(arena.allocator(), &parser);
+        var got = try Path.CurveTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(true, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].p1.coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].p1.coordinates[1].number.value);
-        try testing.expectEqual(20, got.?.args[0].p2.coordinates[0].number.value);
-        try testing.expectEqual(21, got.?.args[0].p2.coordinates[1].number.value);
-        try testing.expectEqual(30, got.?.args[0].end.coordinates[0].number.value);
-        try testing.expectEqual(31, got.?.args[0].end.coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(18, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(18, got.?.pos.end);
+        try testing.expectEqual(true, got.relative);
+        try testing.expectEqual(10, got.args[0].p1.coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].p1.coordinates[1].number.value);
+        try testing.expectEqual(20, got.args[0].p2.coordinates[0].number.value);
+        try testing.expectEqual(21, got.args[0].p2.coordinates[1].number.value);
+        try testing.expectEqual(30, got.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(31, got.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(18, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(18, got.pos.end);
         try testing.expectEqual(19, parser.pos);
     }
 
@@ -3190,38 +3199,36 @@ test "CurveTo" {
             \\70,71 80,81 90,91 Z
             ,
         };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.CurveTo.parse(arena.allocator(), &parser);
+        var got = try Path.CurveTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].p1.coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].p1.coordinates[1].number.value);
-        try testing.expectEqual(20, got.?.args[0].p2.coordinates[0].number.value);
-        try testing.expectEqual(21, got.?.args[0].p2.coordinates[1].number.value);
-        try testing.expectEqual(30, got.?.args[0].end.coordinates[0].number.value);
-        try testing.expectEqual(31, got.?.args[0].end.coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(18, got.?.args[0].pos.end);
-        try testing.expectEqual(40, got.?.args[1].p1.coordinates[0].number.value);
-        try testing.expectEqual(41, got.?.args[1].p1.coordinates[1].number.value);
-        try testing.expectEqual(50, got.?.args[1].p2.coordinates[0].number.value);
-        try testing.expectEqual(51, got.?.args[1].p2.coordinates[1].number.value);
-        try testing.expectEqual(60, got.?.args[1].end.coordinates[0].number.value);
-        try testing.expectEqual(61, got.?.args[1].end.coordinates[1].number.value);
-        try testing.expectEqual(20, got.?.args[1].pos.start);
-        try testing.expectEqual(36, got.?.args[1].pos.end);
-        try testing.expectEqual(70, got.?.args[2].p1.coordinates[0].number.value);
-        try testing.expectEqual(71, got.?.args[2].p1.coordinates[1].number.value);
-        try testing.expectEqual(80, got.?.args[2].p2.coordinates[0].number.value);
-        try testing.expectEqual(81, got.?.args[2].p2.coordinates[1].number.value);
-        try testing.expectEqual(90, got.?.args[2].end.coordinates[0].number.value);
-        try testing.expectEqual(91, got.?.args[2].end.coordinates[1].number.value);
-        try testing.expectEqual(38, got.?.args[2].pos.start);
-        try testing.expectEqual(54, got.?.args[2].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(54, got.?.pos.end);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(10, got.args[0].p1.coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].p1.coordinates[1].number.value);
+        try testing.expectEqual(20, got.args[0].p2.coordinates[0].number.value);
+        try testing.expectEqual(21, got.args[0].p2.coordinates[1].number.value);
+        try testing.expectEqual(30, got.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(31, got.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(18, got.args[0].pos.end);
+        try testing.expectEqual(40, got.args[1].p1.coordinates[0].number.value);
+        try testing.expectEqual(41, got.args[1].p1.coordinates[1].number.value);
+        try testing.expectEqual(50, got.args[1].p2.coordinates[0].number.value);
+        try testing.expectEqual(51, got.args[1].p2.coordinates[1].number.value);
+        try testing.expectEqual(60, got.args[1].end.coordinates[0].number.value);
+        try testing.expectEqual(61, got.args[1].end.coordinates[1].number.value);
+        try testing.expectEqual(20, got.args[1].pos.start);
+        try testing.expectEqual(36, got.args[1].pos.end);
+        try testing.expectEqual(70, got.args[2].p1.coordinates[0].number.value);
+        try testing.expectEqual(71, got.args[2].p1.coordinates[1].number.value);
+        try testing.expectEqual(80, got.args[2].p2.coordinates[0].number.value);
+        try testing.expectEqual(81, got.args[2].p2.coordinates[1].number.value);
+        try testing.expectEqual(90, got.args[2].end.coordinates[0].number.value);
+        try testing.expectEqual(91, got.args[2].end.coordinates[1].number.value);
+        try testing.expectEqual(38, got.args[2].pos.start);
+        try testing.expectEqual(54, got.args[2].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(54, got.pos.end);
         try testing.expectEqual(55, parser.pos);
     }
 
@@ -3231,10 +3238,7 @@ test "CurveTo" {
         // Note that we assert this on reading the production, but it should
         // never come up in real-world use.
         var parser: Parser = .{ .data = "x 10,11 20,21 30,31" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.CurveTo.parse(arena.allocator(), &parser));
+        try testing.expectEqual(null, Path.CurveTo.parse(testing.allocator, &parser));
         try testing.expectEqual(.C_or_c, parser.err.?.expected);
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
@@ -3245,10 +3249,7 @@ test "CurveTo" {
     {
         // Bad, incomplete arg
         var parser: Parser = .{ .data = "C 10,11 20,Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.CurveTo.parse(arena.allocator(), &parser));
+        try testing.expectEqual(null, Path.CurveTo.parse(testing.allocator, &parser));
         try testing.expectEqual(.coordinate_pair, parser.err.?.expected);
         try testing.expectEqual(8, parser.err.?.pos.start);
         try testing.expectEqual(11, parser.err.?.pos.end);
@@ -3261,40 +3262,36 @@ test "SmoothCurveTo" {
     {
         // Good, single, absolute
         var parser: Parser = .{ .data = "S 10,11 20,21" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.SmoothCurveTo.parse(arena.allocator(), &parser);
+        var got = try Path.SmoothCurveTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].p2.coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].p2.coordinates[1].number.value);
-        try testing.expectEqual(20, got.?.args[0].end.coordinates[0].number.value);
-        try testing.expectEqual(21, got.?.args[0].end.coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(12, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(12, got.?.pos.end);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(10, got.args[0].p2.coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].p2.coordinates[1].number.value);
+        try testing.expectEqual(20, got.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(21, got.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(12, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(12, got.pos.end);
         try testing.expectEqual(13, parser.pos);
     }
 
     {
         // Good, single, relative
         var parser: Parser = .{ .data = "s 10,11 20,21 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.SmoothCurveTo.parse(arena.allocator(), &parser);
+        var got = try Path.SmoothCurveTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(true, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].p2.coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].p2.coordinates[1].number.value);
-        try testing.expectEqual(20, got.?.args[0].end.coordinates[0].number.value);
-        try testing.expectEqual(21, got.?.args[0].end.coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(12, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(12, got.?.pos.end);
+        try testing.expectEqual(true, got.relative);
+        try testing.expectEqual(10, got.args[0].p2.coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].p2.coordinates[1].number.value);
+        try testing.expectEqual(20, got.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(21, got.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(12, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(12, got.pos.end);
         try testing.expectEqual(13, parser.pos);
     }
 
@@ -3307,32 +3304,30 @@ test "SmoothCurveTo" {
             \\50,51 60,61 Z
             ,
         };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.SmoothCurveTo.parse(arena.allocator(), &parser);
+        var got = try Path.SmoothCurveTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].p2.coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].p2.coordinates[1].number.value);
-        try testing.expectEqual(20, got.?.args[0].end.coordinates[0].number.value);
-        try testing.expectEqual(21, got.?.args[0].end.coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(12, got.?.args[0].pos.end);
-        try testing.expectEqual(30, got.?.args[1].p2.coordinates[0].number.value);
-        try testing.expectEqual(31, got.?.args[1].p2.coordinates[1].number.value);
-        try testing.expectEqual(40, got.?.args[1].end.coordinates[0].number.value);
-        try testing.expectEqual(41, got.?.args[1].end.coordinates[1].number.value);
-        try testing.expectEqual(14, got.?.args[1].pos.start);
-        try testing.expectEqual(24, got.?.args[1].pos.end);
-        try testing.expectEqual(50, got.?.args[2].p2.coordinates[0].number.value);
-        try testing.expectEqual(51, got.?.args[2].p2.coordinates[1].number.value);
-        try testing.expectEqual(60, got.?.args[2].end.coordinates[0].number.value);
-        try testing.expectEqual(61, got.?.args[2].end.coordinates[1].number.value);
-        try testing.expectEqual(26, got.?.args[2].pos.start);
-        try testing.expectEqual(36, got.?.args[2].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(36, got.?.pos.end);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(10, got.args[0].p2.coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].p2.coordinates[1].number.value);
+        try testing.expectEqual(20, got.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(21, got.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(12, got.args[0].pos.end);
+        try testing.expectEqual(30, got.args[1].p2.coordinates[0].number.value);
+        try testing.expectEqual(31, got.args[1].p2.coordinates[1].number.value);
+        try testing.expectEqual(40, got.args[1].end.coordinates[0].number.value);
+        try testing.expectEqual(41, got.args[1].end.coordinates[1].number.value);
+        try testing.expectEqual(14, got.args[1].pos.start);
+        try testing.expectEqual(24, got.args[1].pos.end);
+        try testing.expectEqual(50, got.args[2].p2.coordinates[0].number.value);
+        try testing.expectEqual(51, got.args[2].p2.coordinates[1].number.value);
+        try testing.expectEqual(60, got.args[2].end.coordinates[0].number.value);
+        try testing.expectEqual(61, got.args[2].end.coordinates[1].number.value);
+        try testing.expectEqual(26, got.args[2].pos.start);
+        try testing.expectEqual(36, got.args[2].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(36, got.pos.end);
         try testing.expectEqual(37, parser.pos);
     }
 
@@ -3342,10 +3337,7 @@ test "SmoothCurveTo" {
         // Note that we assert this on reading the production, but it should
         // never come up in real-world use.
         var parser: Parser = .{ .data = "x 10,11 20,21" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.SmoothCurveTo.parse(arena.allocator(), &parser));
+        try testing.expectEqual(null, Path.SmoothCurveTo.parse(testing.allocator, &parser));
         try testing.expectEqual(.S_or_s, parser.err.?.expected);
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
@@ -3356,10 +3348,7 @@ test "SmoothCurveTo" {
     {
         // Bad, incomplete arg
         var parser: Parser = .{ .data = "S 10,11 20,Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.SmoothCurveTo.parse(arena.allocator(), &parser));
+        try testing.expectEqual(null, Path.SmoothCurveTo.parse(testing.allocator, &parser));
         try testing.expectEqual(.coordinate_pair, parser.err.?.expected);
         try testing.expectEqual(8, parser.err.?.pos.start);
         try testing.expectEqual(11, parser.err.?.pos.end);
@@ -3372,40 +3361,36 @@ test "QuadraticBezierCurveTo" {
     {
         // Good, single, absolute
         var parser: Parser = .{ .data = "Q 10,11 20,21" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.QuadraticBezierCurveTo.parse(arena.allocator(), &parser);
+        var got = try Path.QuadraticBezierCurveTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].p1.coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].p1.coordinates[1].number.value);
-        try testing.expectEqual(20, got.?.args[0].end.coordinates[0].number.value);
-        try testing.expectEqual(21, got.?.args[0].end.coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(12, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(12, got.?.pos.end);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(10, got.args[0].p1.coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].p1.coordinates[1].number.value);
+        try testing.expectEqual(20, got.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(21, got.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(12, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(12, got.pos.end);
         try testing.expectEqual(13, parser.pos);
     }
 
     {
         // Good, single, relative
         var parser: Parser = .{ .data = "q 10,11 20,21 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.QuadraticBezierCurveTo.parse(arena.allocator(), &parser);
+        var got = try Path.QuadraticBezierCurveTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(true, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].p1.coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].p1.coordinates[1].number.value);
-        try testing.expectEqual(20, got.?.args[0].end.coordinates[0].number.value);
-        try testing.expectEqual(21, got.?.args[0].end.coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(12, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(12, got.?.pos.end);
+        try testing.expectEqual(true, got.relative);
+        try testing.expectEqual(10, got.args[0].p1.coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].p1.coordinates[1].number.value);
+        try testing.expectEqual(20, got.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(21, got.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(12, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(12, got.pos.end);
         try testing.expectEqual(13, parser.pos);
     }
 
@@ -3418,32 +3403,30 @@ test "QuadraticBezierCurveTo" {
             \\50,51 60,61 Z
             ,
         };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.QuadraticBezierCurveTo.parse(arena.allocator(), &parser);
+        var got = try Path.QuadraticBezierCurveTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].p1.coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].p1.coordinates[1].number.value);
-        try testing.expectEqual(20, got.?.args[0].end.coordinates[0].number.value);
-        try testing.expectEqual(21, got.?.args[0].end.coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(12, got.?.args[0].pos.end);
-        try testing.expectEqual(30, got.?.args[1].p1.coordinates[0].number.value);
-        try testing.expectEqual(31, got.?.args[1].p1.coordinates[1].number.value);
-        try testing.expectEqual(40, got.?.args[1].end.coordinates[0].number.value);
-        try testing.expectEqual(41, got.?.args[1].end.coordinates[1].number.value);
-        try testing.expectEqual(14, got.?.args[1].pos.start);
-        try testing.expectEqual(24, got.?.args[1].pos.end);
-        try testing.expectEqual(50, got.?.args[2].p1.coordinates[0].number.value);
-        try testing.expectEqual(51, got.?.args[2].p1.coordinates[1].number.value);
-        try testing.expectEqual(60, got.?.args[2].end.coordinates[0].number.value);
-        try testing.expectEqual(61, got.?.args[2].end.coordinates[1].number.value);
-        try testing.expectEqual(26, got.?.args[2].pos.start);
-        try testing.expectEqual(36, got.?.args[2].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(36, got.?.pos.end);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(10, got.args[0].p1.coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].p1.coordinates[1].number.value);
+        try testing.expectEqual(20, got.args[0].end.coordinates[0].number.value);
+        try testing.expectEqual(21, got.args[0].end.coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(12, got.args[0].pos.end);
+        try testing.expectEqual(30, got.args[1].p1.coordinates[0].number.value);
+        try testing.expectEqual(31, got.args[1].p1.coordinates[1].number.value);
+        try testing.expectEqual(40, got.args[1].end.coordinates[0].number.value);
+        try testing.expectEqual(41, got.args[1].end.coordinates[1].number.value);
+        try testing.expectEqual(14, got.args[1].pos.start);
+        try testing.expectEqual(24, got.args[1].pos.end);
+        try testing.expectEqual(50, got.args[2].p1.coordinates[0].number.value);
+        try testing.expectEqual(51, got.args[2].p1.coordinates[1].number.value);
+        try testing.expectEqual(60, got.args[2].end.coordinates[0].number.value);
+        try testing.expectEqual(61, got.args[2].end.coordinates[1].number.value);
+        try testing.expectEqual(26, got.args[2].pos.start);
+        try testing.expectEqual(36, got.args[2].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(36, got.pos.end);
         try testing.expectEqual(37, parser.pos);
     }
 
@@ -3453,10 +3436,7 @@ test "QuadraticBezierCurveTo" {
         // Note that we assert this on reading the production, but it should
         // never come up in real-world use.
         var parser: Parser = .{ .data = "x 10,11 20,21" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.QuadraticBezierCurveTo.parse(arena.allocator(), &parser));
+        try testing.expectEqual(null, Path.QuadraticBezierCurveTo.parse(testing.allocator, &parser));
         try testing.expectEqual(.Q_or_q, parser.err.?.expected);
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
@@ -3467,10 +3447,7 @@ test "QuadraticBezierCurveTo" {
     {
         // Bad, incomplete arg
         var parser: Parser = .{ .data = "Q 10,11 20,Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.QuadraticBezierCurveTo.parse(arena.allocator(), &parser));
+        try testing.expectEqual(null, Path.QuadraticBezierCurveTo.parse(testing.allocator, &parser));
         try testing.expectEqual(.coordinate_pair, parser.err.?.expected);
         try testing.expectEqual(8, parser.err.?.pos.start);
         try testing.expectEqual(11, parser.err.?.pos.end);
@@ -3483,59 +3460,53 @@ test "SmoothQuadraticBezierCurveTo" {
     {
         // Good, single, absolute
         var parser: Parser = .{ .data = "T 10,11 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.SmoothQuadraticBezierCurveTo.parse(arena.allocator(), &parser);
+        var got = try Path.SmoothQuadraticBezierCurveTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(6, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(6, got.?.pos.end);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(10, got.args[0].coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(6, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(6, got.pos.end);
         try testing.expectEqual(7, parser.pos);
     }
 
     {
         // Good, single, relative
         var parser: Parser = .{ .data = "t 10,11 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.SmoothQuadraticBezierCurveTo.parse(arena.allocator(), &parser);
+        var got = try Path.SmoothQuadraticBezierCurveTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(true, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(6, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(6, got.?.pos.end);
+        try testing.expectEqual(true, got.relative);
+        try testing.expectEqual(10, got.args[0].coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(6, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(6, got.pos.end);
         try testing.expectEqual(7, parser.pos);
     }
 
     {
         // Good, multiple
         var parser: Parser = .{ .data = "T 10,11 20,21 30,31 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.SmoothQuadraticBezierCurveTo.parse(arena.allocator(), &parser);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(10, got.?.args[0].coordinates[0].number.value);
-        try testing.expectEqual(11, got.?.args[0].coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(6, got.?.args[0].pos.end);
-        try testing.expectEqual(20, got.?.args[1].coordinates[0].number.value);
-        try testing.expectEqual(21, got.?.args[1].coordinates[1].number.value);
-        try testing.expectEqual(8, got.?.args[1].pos.start);
-        try testing.expectEqual(12, got.?.args[1].pos.end);
-        try testing.expectEqual(30, got.?.args[2].coordinates[0].number.value);
-        try testing.expectEqual(31, got.?.args[2].coordinates[1].number.value);
-        try testing.expectEqual(14, got.?.args[2].pos.start);
-        try testing.expectEqual(18, got.?.args[2].pos.end);
+        var got = try Path.SmoothQuadraticBezierCurveTo.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(10, got.args[0].coordinates[0].number.value);
+        try testing.expectEqual(11, got.args[0].coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(6, got.args[0].pos.end);
+        try testing.expectEqual(20, got.args[1].coordinates[0].number.value);
+        try testing.expectEqual(21, got.args[1].coordinates[1].number.value);
+        try testing.expectEqual(8, got.args[1].pos.start);
+        try testing.expectEqual(12, got.args[1].pos.end);
+        try testing.expectEqual(30, got.args[2].coordinates[0].number.value);
+        try testing.expectEqual(31, got.args[2].coordinates[1].number.value);
+        try testing.expectEqual(14, got.args[2].pos.start);
+        try testing.expectEqual(18, got.args[2].pos.end);
         try testing.expectEqual(19, parser.pos);
     }
 
@@ -3545,13 +3516,7 @@ test "SmoothQuadraticBezierCurveTo" {
         // Note that we assert this on reading the production, but it should
         // never come up in real-world use.
         var parser: Parser = .{ .data = "x 10,11" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.SmoothQuadraticBezierCurveTo.parse(
-            arena.allocator(),
-            &parser,
-        ));
+        try testing.expectEqual(null, Path.SmoothQuadraticBezierCurveTo.parse(testing.allocator, &parser));
         try testing.expectEqual(.T_or_t, parser.err.?.expected);
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
@@ -3562,13 +3527,7 @@ test "SmoothQuadraticBezierCurveTo" {
     {
         // Bad, incomplete arg
         var parser: Parser = .{ .data = "T 25," };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.SmoothQuadraticBezierCurveTo.parse(
-            arena.allocator(),
-            &parser,
-        ));
+        try testing.expectEqual(null, Path.SmoothQuadraticBezierCurveTo.parse(testing.allocator, &parser));
         try testing.expectEqual(.coordinate_pair, parser.err.?.expected);
         try testing.expectEqual(2, parser.err.?.pos.start);
         try testing.expectEqual(4, parser.err.?.pos.end);
@@ -3581,46 +3540,42 @@ test "EllipticalArc" {
     {
         // Good, single, absolute
         var parser: Parser = .{ .data = "A 25,26 -30 0,1 50,-25" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.EllipticalArc.parse(arena.allocator(), &parser);
+        var got = try Path.EllipticalArc.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(25, got.?.args[0].rx.value);
-        try testing.expectEqual(26, got.?.args[0].ry.value);
-        try testing.expectEqual(-30, got.?.args[0].x_axis_rotation.value);
-        try testing.expectEqual(false, got.?.args[0].large_arc_flag.value);
-        try testing.expectEqual(true, got.?.args[0].sweep_flag.value);
-        try testing.expectEqual(50, got.?.args[0].point.coordinates[0].number.value);
-        try testing.expectEqual(-25, got.?.args[0].point.coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(21, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(21, got.?.pos.end);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(25, got.args[0].rx.value);
+        try testing.expectEqual(26, got.args[0].ry.value);
+        try testing.expectEqual(-30, got.args[0].x_axis_rotation.value);
+        try testing.expectEqual(false, got.args[0].large_arc_flag.value);
+        try testing.expectEqual(true, got.args[0].sweep_flag.value);
+        try testing.expectEqual(50, got.args[0].point.coordinates[0].number.value);
+        try testing.expectEqual(-25, got.args[0].point.coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(21, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(21, got.pos.end);
         try testing.expectEqual(22, parser.pos);
     }
 
     {
         // Good, single, relative
         var parser: Parser = .{ .data = "a 25,26 -30 0,1 50,-25 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.EllipticalArc.parse(arena.allocator(), &parser);
+        var got = try Path.EllipticalArc.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(true, got.?.relative);
-        try testing.expectEqual(25, got.?.args[0].rx.value);
-        try testing.expectEqual(26, got.?.args[0].ry.value);
-        try testing.expectEqual(-30, got.?.args[0].x_axis_rotation.value);
-        try testing.expectEqual(false, got.?.args[0].large_arc_flag.value);
-        try testing.expectEqual(true, got.?.args[0].sweep_flag.value);
-        try testing.expectEqual(50, got.?.args[0].point.coordinates[0].number.value);
-        try testing.expectEqual(-25, got.?.args[0].point.coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(21, got.?.args[0].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(21, got.?.pos.end);
+        try testing.expectEqual(true, got.relative);
+        try testing.expectEqual(25, got.args[0].rx.value);
+        try testing.expectEqual(26, got.args[0].ry.value);
+        try testing.expectEqual(-30, got.args[0].x_axis_rotation.value);
+        try testing.expectEqual(false, got.args[0].large_arc_flag.value);
+        try testing.expectEqual(true, got.args[0].sweep_flag.value);
+        try testing.expectEqual(50, got.args[0].point.coordinates[0].number.value);
+        try testing.expectEqual(-25, got.args[0].point.coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(21, got.args[0].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(21, got.pos.end);
         try testing.expectEqual(22, parser.pos);
     }
 
@@ -3633,41 +3588,39 @@ test "EllipticalArc" {
             \\27,52 -28 0,1 48,-27 Z
             ,
         };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        const got = try Path.EllipticalArc.parse(arena.allocator(), &parser);
+        var got = try Path.EllipticalArc.parse(testing.allocator, &parser) orelse return error.ExpectedNonNull;
+        defer got.deinit(testing.allocator);
         try testing.expectEqual(null, parser.err);
-        try testing.expectEqual(false, got.?.relative);
-        try testing.expectEqual(25, got.?.args[0].rx.value);
-        try testing.expectEqual(26, got.?.args[0].ry.value);
-        try testing.expectEqual(-30, got.?.args[0].x_axis_rotation.value);
-        try testing.expectEqual(false, got.?.args[0].large_arc_flag.value);
-        try testing.expectEqual(true, got.?.args[0].sweep_flag.value);
-        try testing.expectEqual(50, got.?.args[0].point.coordinates[0].number.value);
-        try testing.expectEqual(-25, got.?.args[0].point.coordinates[1].number.value);
-        try testing.expectEqual(2, got.?.args[0].pos.start);
-        try testing.expectEqual(21, got.?.args[0].pos.end);
-        try testing.expectEqual(26, got.?.args[1].rx.value);
-        try testing.expectEqual(51, got.?.args[1].ry.value);
-        try testing.expectEqual(-29, got.?.args[1].x_axis_rotation.value);
-        try testing.expectEqual(true, got.?.args[1].large_arc_flag.value);
-        try testing.expectEqual(false, got.?.args[1].sweep_flag.value);
-        try testing.expectEqual(49, got.?.args[1].point.coordinates[0].number.value);
-        try testing.expectEqual(-26, got.?.args[1].point.coordinates[1].number.value);
-        try testing.expectEqual(23, got.?.args[1].pos.start);
-        try testing.expectEqual(42, got.?.args[1].pos.end);
-        try testing.expectEqual(27, got.?.args[2].rx.value);
-        try testing.expectEqual(52, got.?.args[2].ry.value);
-        try testing.expectEqual(-28, got.?.args[2].x_axis_rotation.value);
-        try testing.expectEqual(false, got.?.args[2].large_arc_flag.value);
-        try testing.expectEqual(true, got.?.args[2].sweep_flag.value);
-        try testing.expectEqual(48, got.?.args[2].point.coordinates[0].number.value);
-        try testing.expectEqual(-27, got.?.args[2].point.coordinates[1].number.value);
-        try testing.expectEqual(44, got.?.args[2].pos.start);
-        try testing.expectEqual(63, got.?.args[2].pos.end);
-        try testing.expectEqual(0, got.?.pos.start);
-        try testing.expectEqual(63, got.?.pos.end);
+        try testing.expectEqual(false, got.relative);
+        try testing.expectEqual(25, got.args[0].rx.value);
+        try testing.expectEqual(26, got.args[0].ry.value);
+        try testing.expectEqual(-30, got.args[0].x_axis_rotation.value);
+        try testing.expectEqual(false, got.args[0].large_arc_flag.value);
+        try testing.expectEqual(true, got.args[0].sweep_flag.value);
+        try testing.expectEqual(50, got.args[0].point.coordinates[0].number.value);
+        try testing.expectEqual(-25, got.args[0].point.coordinates[1].number.value);
+        try testing.expectEqual(2, got.args[0].pos.start);
+        try testing.expectEqual(21, got.args[0].pos.end);
+        try testing.expectEqual(26, got.args[1].rx.value);
+        try testing.expectEqual(51, got.args[1].ry.value);
+        try testing.expectEqual(-29, got.args[1].x_axis_rotation.value);
+        try testing.expectEqual(true, got.args[1].large_arc_flag.value);
+        try testing.expectEqual(false, got.args[1].sweep_flag.value);
+        try testing.expectEqual(49, got.args[1].point.coordinates[0].number.value);
+        try testing.expectEqual(-26, got.args[1].point.coordinates[1].number.value);
+        try testing.expectEqual(23, got.args[1].pos.start);
+        try testing.expectEqual(42, got.args[1].pos.end);
+        try testing.expectEqual(27, got.args[2].rx.value);
+        try testing.expectEqual(52, got.args[2].ry.value);
+        try testing.expectEqual(-28, got.args[2].x_axis_rotation.value);
+        try testing.expectEqual(false, got.args[2].large_arc_flag.value);
+        try testing.expectEqual(true, got.args[2].sweep_flag.value);
+        try testing.expectEqual(48, got.args[2].point.coordinates[0].number.value);
+        try testing.expectEqual(-27, got.args[2].point.coordinates[1].number.value);
+        try testing.expectEqual(44, got.args[2].pos.start);
+        try testing.expectEqual(63, got.args[2].pos.end);
+        try testing.expectEqual(0, got.pos.start);
+        try testing.expectEqual(63, got.pos.end);
         try testing.expectEqual(64, parser.pos);
     }
 
@@ -3677,10 +3630,7 @@ test "EllipticalArc" {
         // Note that we assert this on reading the production, but it should
         // never come up in real-world use.
         var parser: Parser = .{ .data = "x 25,26 -30 0,1 50,-25" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.EllipticalArc.parse(arena.allocator(), &parser));
+        _ = try Path.EllipticalArc.parse(testing.allocator, &parser);
         try testing.expectEqual(.A_or_a, parser.err.?.expected);
         try testing.expectEqual(0, parser.err.?.pos.start);
         try testing.expectEqual(0, parser.err.?.pos.end);
@@ -3691,10 +3641,7 @@ test "EllipticalArc" {
     {
         // Bad, incomplete arg
         var parser: Parser = .{ .data = "A 25,26 -30 Z" };
-        var arena = heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        try testing.expectEqual(null, Path.EllipticalArc.parse(arena.allocator(), &parser));
+        _ = try Path.EllipticalArc.parse(testing.allocator, &parser);
         try testing.expectEqual(.flag, parser.err.?.expected);
         try testing.expectEqual(12, parser.err.?.pos.start);
         try testing.expectEqual(12, parser.err.?.pos.end);
@@ -4326,9 +4273,8 @@ test "comsumeRParen" {
 /// For testing only.
 fn testError(p: *Parser, expected: [:0]const u8) !void {
     var buf = [_:0]u8{0} ** 256;
-    var stream = io.fixedBufferStream(&buf);
-    const writer = stream.writer();
-    try p.fmtErr(writer);
+    var writer = std.Io.Writer.fixed(&buf);
+    try p.fmtErr(&writer);
     try testing.expectEqualSentinel(
         u8,
         0,

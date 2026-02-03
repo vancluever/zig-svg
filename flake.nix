@@ -1,11 +1,11 @@
 {
-  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-  inputs.zls = {
-    url = "github:zigtools/zls/0.12.0";
-    inputs.nixpkgs.follows = "nixpkgs";
-  };
+  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
 
-  outputs = { self, nixpkgs, zls }:
+  outputs =
+    {
+      self,
+      nixpkgs,
+    }:
     let
       supportedSystems = [
         "aarch64-darwin"
@@ -14,27 +14,27 @@
         "x86_64-linux"
       ];
 
-      defaultForEachSupportedSystem = (func:
+      defaultForEachSupportedSystem = (
+        func:
         nixpkgs.lib.genAttrs supportedSystems (system: {
           default = func system;
         })
       );
     in
     {
-      devShells = defaultForEachSupportedSystem
-        (system:
-          let
-            pkgs = import nixpkgs {
-              inherit system;
-            };
-          in
-          pkgs.mkShell {
-            packages = with pkgs; [
-              zig_0_12
-              zls.packages.${system}.zls
-              python3
-            ];
-          }
-        );
+      devShells = defaultForEachSupportedSystem (
+        system:
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+          };
+        in
+        pkgs.mkShell {
+          packages = with pkgs; [
+            zig_0_15
+            zls
+          ];
+        }
+      );
     };
 }
