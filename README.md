@@ -48,6 +48,12 @@ for (path.nodes) |n| {
 }
 ```
 
+
+## Contributing
+
+Note that public pull requests to this repository are closed. See
+[`CONTRIBUTING.md`](/CONTRIBUTING.md) for more details.
+
 ## License
 
 This project is licensed MPL 2.0. See LICENSE for a copy of the MPL.
