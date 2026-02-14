@@ -5,9 +5,7 @@
 > free to [open an issue](https://github.com/vancluever/zig-svg/issues/new)
 > with any questions, bugs, or feature requests.
 
-Pull requests to the zig-svg project are restricted. Any pull request opened
-will likely be closed using the [Vouch](https://github.com/mitchellh/vouch)
-workflow, with a message directing you to this document to explain why.
+Pull requests to the zig-svg project are restricted.
 
 Note that the project does not accept public pull requests and there are no
 plans to change this for the foreseeable future. If you have a feature request
